@@ -30,9 +30,13 @@ final class WorkQueue<Job: Sendable>: Sendable {
         s.active += 1
         handoff.append((s.waiters.removeLast(), job))
       }
-      while let job = iterator.next() { s.jobs.append(job) }
+      while let job = iterator.next() {
+        s.jobs.append(job)
+      }
     }
-    for (waiter, job) in handoff { waiter.resume(returning: job) }
+    for (waiter, job) in handoff {
+      waiter.resume(returning: job)
+    }
   }
 
   private enum Decision {
@@ -45,28 +49,36 @@ final class WorkQueue<Job: Sendable>: Sendable {
   /// job it got from the previous call.
   func next(finishedOne: Bool) async -> Job? {
     let decision = state.withLock { s -> Decision in
-      if finishedOne { s.active -= 1 }
+      if finishedOne {
+        s.active -= 1
+      }
       return Self.decide(&s)
     }
     switch decision {
-    case .job(let job):
+    case let .job(job):
       return job
-    case .finished(let waiters):
-      for waiter in waiters { waiter.resume(returning: nil) }
+    case let .finished(waiters):
+      for waiter in waiters {
+        waiter.resume(returning: nil)
+      }
       return nil
     case .wait:
       return await withCheckedContinuation { continuation in
         let recheck = state.withLock { s -> Decision in
           let d = Self.decide(&s)
-          if case .wait = d { s.waiters.append(continuation) }
+          if case .wait = d {
+            s.waiters.append(continuation)
+          }
           return d
         }
         switch recheck {
-        case .job(let job):
+        case let .job(job):
           continuation.resume(returning: job)
-        case .finished(let waiters):
+        case let .finished(waiters):
           continuation.resume(returning: nil)
-          for waiter in waiters { waiter.resume(returning: nil) }
+          for waiter in waiters {
+            waiter.resume(returning: nil)
+          }
         case .wait:
           break
         }
@@ -98,6 +110,8 @@ final class WorkQueue<Job: Sendable>: Sendable {
       s.waiters = []
       return waiters
     }
-    for waiter in waiters { waiter.resume(returning: nil) }
+    for waiter in waiters {
+      waiter.resume(returning: nil)
+    }
   }
 }

@@ -47,16 +47,16 @@ public struct Configuration: Sendable {
   public var invertMatch = false
 
   public var mode: OutputMode = .lines
-  public var lineNumbers: Bool? = nil
+  public var lineNumbers: Bool?
   public var column = false
-  public var withFilename: Bool? = nil
-  public var heading: Bool? = nil
+  public var withFilename: Bool?
+  public var heading: Bool?
   public var color: ColorChoice = .auto
   public var nullAfterPath = false
   public var vimgrep = false
   public var beforeContext = 0
   public var afterContext = 0
-  public var maxCount: Int? = nil
+  public var maxCount: Int?
   public var includeZero = false
   public var stats = false
   public var contextSeparator: [UInt8]? = Array("--".utf8)
@@ -75,15 +75,15 @@ public struct Configuration: Sendable {
   public var types: [String] = []
   public var typesNot: [String] = []
   public var typeAdditions: [String] = []
-  public var maxDepth: Int? = nil
-  public var maxFilesize: Int64? = nil
+  public var maxDepth: Int?
+  public var maxFilesize: Int64?
   public var binary: BinaryMode = .auto
   /// Skip a leading UTF-8 byte order mark, like ripgrep's default encoding
   /// detection (`-E none` turns it off).
   public var stripByteOrderMark = true
   public var sort: SortMode = .none
 
-  public var threads: Int? = nil
+  public var threads: Int?
   /// Use the persistent directory listing cache (see `ListingCache`).
   public var useCache = FileIO.environment("SG_NO_CACHE") == nil
   public var debug = false
@@ -131,7 +131,9 @@ struct OutputSettings: Sendable {
   var stripByteOrderMark: Bool
   var contextSeparator: [UInt8]?
 
-  var hasContext: Bool { before > 0 || after > 0 }
+  var hasContext: Bool {
+    before > 0 || after > 0
+  }
 
   /// Whether printing needs exact match positions from the Pike VM.
   var needsSpans: Bool {

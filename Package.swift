@@ -29,13 +29,15 @@ let package = Package(
       dependencies: [
         .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
         .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
-      ]),
+      ],
+    ),
     .target(
       name: "SwiftGrepKit",
       dependencies: ["GrepRegex", "SwiftGrepMacros", .product(name: "BinaryParsing", package: "swift-binary-parsing")],
-      swiftSettings: settings),
+      swiftSettings: settings,
+    ),
     .executableTarget(name: "sg", dependencies: ["SwiftGrepKit"], swiftSettings: settings),
     .testTarget(name: "GrepRegexTests", dependencies: ["GrepRegex"]),
     .testTarget(name: "SwiftGrepKitTests", dependencies: ["SwiftGrepKit"]),
-  ]
+  ],
 )

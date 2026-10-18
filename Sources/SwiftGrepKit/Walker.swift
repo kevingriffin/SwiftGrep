@@ -49,8 +49,8 @@ enum Job: Sendable {
 struct WalkOptions: Sendable {
   var hidden = false
   var followLinks = false
-  var maxDepth: Int? = nil
-  var maxFilesize: Int64? = nil
+  var maxDepth: Int?
+  var maxFilesize: Int64?
   var useIgnoreFiles = true
   var ignore = IgnoreContext()
 }
@@ -81,7 +81,8 @@ final class SearchRun: Sendable {
   let linesMatched = Atomic<Int>(0)
 
   init(settings: OutputSettings, matcher: Matcher, walk: WalkOptions, overrides: IgnoreRules?,
-       types: TypeMatcher?, sink: OutputSink, queue: WorkQueue<Job>, flushEachFile: Bool, separateFiles: Bool, sortOutput: Bool) {
+       types: TypeMatcher?, sink: OutputSink, queue: WorkQueue<Job>, flushEachFile: Bool, separateFiles: Bool, sortOutput: Bool)
+  {
     self.settings = settings
     self.matcher = matcher
     self.walk = walk
@@ -104,7 +105,6 @@ final class SearchRun: Sendable {
     failed.store(true, ordering: .relaxed)
     Diagnostics.error("\(String(decoding: path.isEmpty ? Array(".".utf8) : path, as: UTF8.self)): \(error.message)")
   }
-
 }
 
 /// Searches file contents and formats their output. Owned by a worker; kept
@@ -141,7 +141,9 @@ struct FileSearcher: ~Copyable {
     }
     if result.hadMatch != (mode == .filesWithoutMatch) {
       shared.matched.store(true, ordering: .relaxed)
-      if mode == .quiet { shared.stop() }
+      if mode == .quiet {
+        shared.stop()
+      }
     }
     guard out.count > start else { return }
     if shared.sortOutput {
@@ -150,7 +152,9 @@ struct FileSearcher: ~Copyable {
     } else if shared.separateFiles {
       shared.sink.writeFile(out.storage.span)
       out.removeAll()
-      if shared.sink.isBroken { shared.stop() }
+      if shared.sink.isBroken {
+        shared.stop()
+      }
     } else if shared.flushEachFile || out.count >= Self.flushThreshold {
       flush()
     }
@@ -161,14 +165,18 @@ struct FileSearcher: ~Copyable {
     out.append(path)
     out.append(shared.settings.nullAfterPath ? 0 : 10)
     shared.matched.store(true, ordering: .relaxed)
-    if shared.flushEachFile || out.count >= Self.flushThreshold { flush() }
+    if shared.flushEachFile || out.count >= Self.flushThreshold {
+      flush()
+    }
   }
 
   mutating func flush() {
     guard !out.isEmpty else { return }
     shared.sink.write(out.storage.span)
     out.removeAll()
-    if shared.sink.isBroken { shared.stop() }
+    if shared.sink.isBroken {
+      shared.stop()
+    }
   }
 }
 
@@ -205,13 +213,15 @@ struct Worker: ~Copyable {
     var finishedOne = false
     while let job = await shared.queue.next(finishedOne: finishedOne) {
       finishedOne = true
-      if shared.stopped.load(ordering: .relaxed) { continue }
+      if shared.stopped.load(ordering: .relaxed) {
+        continue
+      }
       switch job {
-      case .directory(let directory):
+      case let .directory(directory):
         process(directory)
-      case .file(let path):
+      case let .file(path):
         searchExplicitFile(path)
-      case .largeFile(let path, let size):
+      case let .largeFile(path, size):
         searchLargeFile(path, size: size)
       case .standardInput:
         searchStandardInput()
@@ -253,7 +263,9 @@ struct Worker: ~Copyable {
       shared.report(job.displayPath, error)
       return
     }
-    if info == nil { info = try? directory.descriptor.stat() }
+    if info == nil {
+      info = try? directory.descriptor.stat()
+    }
     do {
       try listing.read(directory: directory.descriptor)
     } catch {
@@ -303,13 +315,18 @@ struct Worker: ~Copyable {
         let child = DirectoryJob(
           displayPath: Self.join(job.displayPath, name.span),
           absolutePath: Self.join(job.absolutePath, name.span),
-          depth: entryDepth, ignore: level, ancestors: ancestors, cache: job.cache)
+          depth: entryDepth, ignore: level, ancestors: ancestors, cache: job.cache,
+        )
         subdirectories.append(.directory(child))
       } else {
         if let max = shared.walk.maxFilesize {
           // Cached listings carry no sizes; look this one up.
-          if entry.size < 0, let info = statEntry(entry, access, job: job) { entry.size = info.size }
-          if entry.size > max { continue }
+          if entry.size < 0, let info = statEntry(entry, access, job: job) {
+            entry.size = info.size
+          }
+          if entry.size > max {
+            continue
+          }
         }
         listing.setKindAndSize(at: index, kind: entry.kind, size: entry.size)
         if entry.isLarge && shared.settings.mode != .listFiles {
@@ -327,7 +344,9 @@ struct Worker: ~Copyable {
     shared.queue.push(subdirectories)
     shared.queue.push(largeFiles)
     for index in fileIndices {
-      if shared.stopped.load(ordering: .relaxed) { return }
+      if shared.stopped.load(ordering: .relaxed) {
+        return
+      }
       searchEntry(listing.entries[index], access, parent: job)
     }
   }
@@ -342,7 +361,7 @@ struct Worker: ~Copyable {
 
   private func statEntry(_ entry: DirectoryEntry, _ access: DirectoryAccess, job: DirectoryJob) -> Stat? {
     switch access {
-    case .descriptor(let fd):
+    case let .descriptor(fd):
       try? OS.stat(listing.names.span.extracting(entry.cNameRange), in: fd)
     case .path:
       try? OS.stat(entryPath(entry, in: job).span)
@@ -352,7 +371,7 @@ struct Worker: ~Copyable {
   /// Reads a small file in the directory, such as an ignore file.
   private func readSmallFile(_ entry: DirectoryEntry, _ access: DirectoryAccess, job: DirectoryJob) -> [UInt8]? {
     switch access {
-    case .descriptor(let fd):
+    case let .descriptor(fd):
       return try? FileIO.readWholeFile(listing.names.span.extracting(entry.cNameRange), in: fd)
     case .path:
       guard let file = try? OS.open(entryPath(entry, in: job).span, .closeOnExec) else { return nil }
@@ -363,7 +382,7 @@ struct Worker: ~Copyable {
   /// Reads `relative` (a path inside the directory, without a terminator).
   private func readSmallFile(_ relative: [UInt8], _ access: DirectoryAccess, job: DirectoryJob) -> [UInt8]? {
     switch access {
-    case .descriptor(let fd):
+    case let .descriptor(fd):
       return try? FileIO.readWholeFile((relative + [0]).span, in: fd)
     case .path:
       var path = Self.join(job.displayPath.isEmpty ? Array(".".utf8) : job.displayPath, relative.span)
@@ -377,32 +396,46 @@ struct Worker: ~Copyable {
     var result: [UInt8] = []
     result.reserveCapacity(parent.count + name.count + 1)
     result.append(contentsOf: parent)
-    if !parent.isEmpty && parent.last != UInt8(ascii: "/") { result.append(UInt8(ascii: "/")) }
-    for i in name.indices { result.append(name[i]) }
+    if !parent.isEmpty && parent.last != UInt8(ascii: "/") {
+      result.append(UInt8(ascii: "/"))
+    }
+    for i in name.indices {
+      result.append(name[i])
+    }
     return result
   }
 
   /// Applies `--glob` overrides, ignore files, `--type` and hidden-file rules.
   private static func accept(
     _ entry: DirectoryEntry, isDirectory: Bool, in job: DirectoryJob, level: IgnoreLevel?,
-    listing: borrowing DirectoryListing, scratch: inout PathScratch, shared: SearchRun
+    listing: borrowing DirectoryListing, scratch: inout PathScratch, shared: SearchRun,
   ) -> Bool {
     let names = listing.names.span
     let name = names.extracting(entry.nameRange)
     if let overrides = shared.overrides {
       scratch.override.removeAll(keepingCapacity: true)
       var parent = job.displayPath[...]
-      if parent.starts(with: [UInt8(ascii: "."), UInt8(ascii: "/")]) { parent = parent.dropFirst(2) }
-      if parent == [UInt8(ascii: ".")] { parent = [] }
+      if parent.starts(with: [UInt8(ascii: "."), UInt8(ascii: "/")]) {
+        parent = parent.dropFirst(2)
+      }
+      if parent == [UInt8(ascii: ".")] {
+        parent = []
+      }
       scratch.override.append(contentsOf: parent)
-      if !parent.isEmpty && parent.last != UInt8(ascii: "/") { scratch.override.append(UInt8(ascii: "/")) }
+      if !parent.isEmpty && parent.last != UInt8(ascii: "/") {
+        scratch.override.append(UInt8(ascii: "/"))
+      }
       let nameStart = scratch.override.count
-      for i in entry.nameRange { scratch.override.append(names[i]) }
+      for i in entry.nameRange {
+        scratch.override.append(names[i])
+      }
       // Overrides beat every other rule, including hidden files.
       switch overrides.match(scratch.override.span, nameStart: nameStart, isDirectory: isDirectory) {
       case .ignore: return false
       case .whitelist: return true
-      case .none: if shared.overridesWhitelist && !isDirectory { return false }
+      case .none: if shared.overridesWhitelist && !isDirectory {
+          return false
+        }
       }
     }
     var whitelisted = false
@@ -413,13 +446,19 @@ struct Worker: ~Copyable {
         scratch.absolute.append(contentsOf: job.absolutePath)
         scratch.absolute.append(UInt8(ascii: "/"))
         let nameStart = scratch.absolute.count
-        for i in entry.nameRange { scratch.absolute.append(names[i]) }
+        for i in entry.nameRange {
+          scratch.absolute.append(names[i])
+        }
         m = shared.walk.ignore.match(level: level, path: scratch.absolute.span, nameStart: nameStart, isDirectory: isDirectory)
       } else {
         m = shared.walk.ignore.match(level: level, path: name, nameStart: 0, isDirectory: isDirectory)
       }
-      if m == .ignore { return false }
-      if m == .whitelist { whitelisted = true }
+      if m == .ignore {
+        return false
+      }
+      if m == .whitelist {
+        whitelisted = true
+      }
     }
     if !isDirectory, let types = shared.types {
       switch types.match(name: name) {
@@ -428,7 +467,9 @@ struct Worker: ~Copyable {
       case .none: break
       }
     }
-    if !whitelisted && !shared.walk.hidden && name[0] == UInt8(ascii: ".") { return false }
+    if !whitelisted && !shared.walk.hidden && name[0] == UInt8(ascii: ".") {
+      return false
+    }
     return true
   }
 
@@ -448,7 +489,8 @@ struct Worker: ~Copyable {
       if name.equals(Self.gitName) {
         hasGit = true
         if entry.kind == .directory && context.useGitExclude,
-           let data = readSmallFile(Self.gitExcludePath, access, job: job) {
+           let data = readSmallFile(Self.gitExcludePath, access, job: job)
+        {
           gitExclude = IgnoreRules(gitignore: data)
         }
       } else if name.equals(Self.ignoreName) && context.useDotIgnore {
@@ -463,7 +505,9 @@ struct Worker: ~Copyable {
       return job.ignore
     }
     var directory = job.absolutePath
-    if directory.last != UInt8(ascii: "/") { directory.append(UInt8(ascii: "/")) }
+    if directory.last != UInt8(ascii: "/") {
+      directory.append(UInt8(ascii: "/"))
+    }
     return IgnoreLevel(parent: job.ignore, directory: directory, rgignore: rgignore, dotIgnore: dotIgnore,
                        gitignore: gitignore, gitExclude: gitExclude, hasGit: hasGit)
   }
@@ -484,7 +528,9 @@ struct Worker: ~Copyable {
     }
     do {
       let names = listing.names.span
-      for i in entry.nameRange { displayScratch.append(names[i]) }
+      for i in entry.nameRange {
+        displayScratch.append(names[i])
+      }
     }
 
     if shared.settings.mode == .listFiles {
@@ -499,7 +545,7 @@ struct Worker: ~Copyable {
     let file: OpenFile
     do {
       switch access {
-      case .descriptor(let fd):
+      case let .descriptor(fd):
         file = try OS.open(listing.names.span.extracting(entry.cNameRange), in: fd, .closeOnExec)
       case .path:
         file = try OS.open((displayScratch + [0]).span, .closeOnExec)
@@ -518,9 +564,9 @@ struct Worker: ~Copyable {
       file.close()
       searcher.search(buffer.storage.span, path: displayScratch, explicit: explicit)
       buffer.shrinkIfLarge()
-    case .failed(let error):
+    case let .failed(error):
       shared.report(displayScratch, error)
-    case .tooLarge(let length):
+    case let .tooLarge(length):
       let mapped: MappedFile
       do {
         mapped = try MappedFile(file.descriptor, length: Int(length))
@@ -596,7 +642,9 @@ extension Span where Element == UInt8 {
   /// Whether the span holds exactly `bytes`.
   func equals(_ bytes: [UInt8]) -> Bool {
     guard count == bytes.count else { return false }
-    for i in indices where self[i] != bytes[i] { return false }
+    for i in indices where self[i] != bytes[i] {
+      return false
+    }
     return true
   }
 }

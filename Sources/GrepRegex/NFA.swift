@@ -24,14 +24,18 @@ struct ByteSet: Hashable, Sendable {
   }
 
   mutating func insert(_ range: ClosedRange<UInt8>) {
-    for b in range { insert(b) }
+    for b in range {
+      insert(b)
+    }
   }
 
   mutating func remove(_ byte: UInt8) {
     bits[Int(byte &>> 6)] &= ~(1 &<< UInt64(byte & 63))
   }
 
-  var isEmpty: Bool { bits[0] | bits[1] | bits[2] | bits[3] == 0 }
+  var isEmpty: Bool {
+    bits[0] | bits[1] | bits[2] | bits[3] == 0
+  }
 
   var count: Int {
     bits[0].nonzeroBitCount + bits[1].nonzeroBitCount + bits[2].nonzeroBitCount + bits[3].nonzeroBitCount
@@ -42,7 +46,9 @@ struct ByteSet: Hashable, Sendable {
   }
 
   func hash(into hasher: inout Hasher) {
-    for i in 0..<4 { hasher.combine(bits[i]) }
+    for i in 0..<4 {
+      hasher.combine(bits[i])
+    }
   }
 
   /// Members as maximal ranges.
@@ -51,7 +57,9 @@ struct ByteSet: Hashable, Sendable {
     var start: Int? = nil
     for b in 0...256 {
       let inSet = b < 256 && contains(UInt8(b))
-      if inSet, start == nil { start = b }
+      if inSet, start == nil {
+        start = b
+      }
       if !inSet, let s = start {
         result.append(UInt8(s)...UInt8(b - 1))
         start = nil
@@ -65,11 +73,22 @@ struct ByteSet: Hashable, Sendable {
 struct LookSet: Hashable, Sendable {
   var bits: UInt16 = 0
 
-  @inline(__always) func contains(_ look: Look) -> Bool { bits & (1 << look.rawValue) != 0 }
-  @inline(__always) mutating func insert(_ look: Look) { bits |= 1 << look.rawValue }
-  var isEmpty: Bool { bits == 0 }
+  @inline(__always) func contains(_ look: Look) -> Bool {
+    bits & (1 << look.rawValue) != 0
+  }
 
-  var containsWordLook: Bool { bits & ~(1 << Look.startLine.rawValue | 1 << Look.endLine.rawValue) != 0 }
+  @inline(__always) mutating func insert(_ look: Look) {
+    bits |= 1 << look.rawValue
+  }
+
+  var isEmpty: Bool {
+    bits == 0
+  }
+
+  var containsWordLook: Bool {
+    bits & ~(1 << Look.startLine.rawValue | 1 << Look.endLine.rawValue) != 0
+  }
+
   var containsUnicodeWordLook: Bool {
     Look.allCases.contains { $0.isUnicodeWordLook && contains($0) }
   }
@@ -156,58 +175,67 @@ struct NFACompiler {
     switch node {
     case .empty:
       return next
-    case .char(let c):
+    case let .char(c):
       if c == 10 {
         throw RegexError(
           message: "the literal '\"\\n\"' is not allowed in a regex\n\nConsider enabling multiline mode with the --multiline flag (or -U for short).",
-          pattern: pattern, offset: nil)
+          pattern: pattern, offset: nil,
+        )
       }
       var s = next
       for b in UTF8Encoding.encode(c).reversed() {
         s = add(.bytes(ByteSet(b...b), next: s))
       }
       return s
-    case .byte(let b):
+    case let .byte(b):
       guard b != 10 else { return add(.fail) }
       return add(.bytes(ByteSet(b...b), next: next))
-    case .byteSet(let set):
+    case let .byteSet(set):
       var bytes = ByteSet()
       for r in set.ranges where r.lowerBound <= 0xFF {
         bytes.insert(UInt8(r.lowerBound)...UInt8(min(r.upperBound, 0xFF)))
       }
       bytes.remove(10)
       return bytes.isEmpty ? add(.fail) : add(.bytes(bytes, next: next))
-    case .set(let rawSet):
+    case let .set(rawSet):
       // The line terminator can never be part of a match.
       let set = rawSet.removing(10)
-      if set.isEmpty { return add(.fail) }
+      if set.isEmpty {
+        return add(.fail)
+      }
       if set.isASCII {
         var bytes = ByteSet()
-        for r in set.ranges { bytes.insert(UInt8(r.lowerBound)...UInt8(r.upperBound)) }
+        for r in set.ranges {
+          bytes.insert(UInt8(r.lowerBound)...UInt8(r.upperBound))
+        }
         return add(.bytes(bytes, next: next))
       }
       return try compileUTF8(set, next: next)
-    case .look(let look):
+    case let .look(look):
       nfa.looks.insert(look)
       return add(.look(look, next: next))
-    case .concat(let nodes):
+    case let .concat(nodes):
       var s = next
-      for n in nodes.reversed() { s = try compile(n, next: s) }
+      for n in nodes.reversed() {
+        s = try compile(n, next: s)
+      }
       return s
-    case .alternate(let nodes):
+    case let .alternate(nodes):
       var starts: [NFA.StateID] = []
       starts.reserveCapacity(nodes.count)
-      for n in nodes { starts.append(try compile(n, next: next)) }
+      for n in nodes {
+        try starts.append(compile(n, next: next))
+      }
       return add(.union(starts))
-    case .group(let n):
+    case let .group(n):
       return try compile(n, next: next)
-    case .repeat(let n, let min, let max, let greedy):
+    case let .repeat(n, min, max, greedy):
       return try compileRepeat(n, min: min, max: max, greedy: greedy, next: next)
     }
   }
 
   private mutating func compileRepeat(
-    _ node: RegexNode, min: Int, max: Int?, greedy: Bool, next: NFA.StateID
+    _ node: RegexNode, min: Int, max: Int?, greedy: Bool, next: NFA.StateID,
   ) throws(RegexError) -> NFA.StateID {
     var result: NFA.StateID
     if let max {
@@ -225,7 +253,9 @@ struct NFACompiler {
     let loop = add(.fail)
     let body = try compile(node, next: loop)
     nfa.states[Int(loop)] = .union(greedy ? [body, next] : [next, body])
-    if min == 0 { return loop }
+    if min == 0 {
+      return loop
+    }
     result = body
     for _ in 0..<(min - 1) {
       result = try compile(node, next: result)
@@ -240,7 +270,9 @@ struct NFACompiler {
       sequences = cached
     } else {
       var all: [UTF8Sequence] = []
-      for r in set.ranges { all.append(contentsOf: UTF8Sequences.split(r)) }
+      for r in set.ranges {
+        all.append(contentsOf: UTF8Sequences.split(r))
+      }
       classCache[set] = all
       sequences = all
     }
@@ -251,7 +283,9 @@ struct NFACompiler {
         var starts: [NFA.StateID] = []
         for seq in sequences {
           var s = next
-          for r in seq.ranges.reversed() { s = add(.bytes(ByteSet(r), next: s)) }
+          for r in seq.ranges.reversed() {
+            s = add(.bytes(ByteSet(r), next: s))
+          }
           starts.append(s)
         }
         return add(.union(starts))
@@ -290,7 +324,9 @@ enum UTF8Sequences {
         // Remove surrogates.
         if start <= 0xDFFF && end >= 0xD800 {
           if start < 0xD800 {
-            if end > 0xDFFF { stack.append((0xE000, end)) }
+            if end > 0xDFFF {
+              stack.append((0xE000, end))
+            }
             end = 0xD7FF
           } else if end > 0xDFFF {
             start = 0xE000
@@ -331,7 +367,9 @@ enum UTF8Sequences {
       }
     }
     result.sort { a, b in
-      for (x, y) in zip(a.ranges, b.ranges) where x != y { return x.lowerBound < y.lowerBound }
+      for (x, y) in zip(a.ranges, b.ranges) where x != y {
+        return x.lowerBound < y.lowerBound
+      }
       return a.ranges.count < b.ranges.count
     }
     return result
@@ -356,7 +394,9 @@ struct ByteRangeTrie {
       let isLast = i == seq.ranges.count - 1
       if let index = nodes[node].firstIndex(where: { $0.low == r.lowerBound && $0.high == r.upperBound }) {
         let edge = nodes[node][index]
-        if isLast || edge.child < 0 { return isLast && edge.child < 0 }
+        if isLast || edge.child < 0 {
+          return isLast && edge.child < 0
+        }
         node = edge.child
         continue
       }

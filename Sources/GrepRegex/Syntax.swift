@@ -24,7 +24,9 @@ public enum Look: UInt8, Sendable, Hashable, CaseIterable {
   case wordStartHalfASCII
   case wordEndHalfASCII
 
-  var isWordLook: Bool { self != .startLine && self != .endLine }
+  var isWordLook: Bool {
+    self != .startLine && self != .endLine
+  }
 
   var isUnicodeWordLook: Bool {
     switch self {
@@ -71,12 +73,12 @@ indirect enum RegexNode: Sendable, Hashable {
   /// Whether the expression contains any character with uppercase letters, used by smart case.
   var containsUppercaseLiteral: Bool {
     switch self {
-    case .char(let c):
+    case let .char(c):
       guard let s = Unicode.Scalar(c) else { return false }
       return s.properties.isUppercase
-    case .concat(let nodes), .alternate(let nodes):
+    case let .concat(nodes), let .alternate(nodes):
       return nodes.contains { $0.containsUppercaseLiteral }
-    case .repeat(let node, _, _, _), .group(let node):
+    case let .repeat(node, _, _, _), let .group(node):
       return node.containsUppercaseLiteral
     default:
       return false
@@ -86,8 +88,8 @@ indirect enum RegexNode: Sendable, Hashable {
   var containsLook: Bool {
     switch self {
     case .look: true
-    case .concat(let nodes), .alternate(let nodes): nodes.contains { $0.containsLook }
-    case .repeat(let node, _, _, _), .group(let node): node.containsLook
+    case let .concat(nodes), let .alternate(nodes): nodes.contains { $0.containsLook }
+    case let .repeat(node, _, _, _), let .group(node): node.containsLook
     default: false
     }
   }
@@ -96,13 +98,13 @@ indirect enum RegexNode: Sendable, Hashable {
   var minLength: Int {
     switch self {
     case .empty, .look: 0
-    case .char(let c): UTF8Encoding.length(of: c)
+    case let .char(c): UTF8Encoding.length(of: c)
     case .byte, .byteSet: 1
-    case .set(let s): s.ranges.first.map { UTF8Encoding.length(of: $0.lowerBound) } ?? 0
-    case .concat(let nodes): nodes.reduce(0) { $0 + $1.minLength }
-    case .alternate(let nodes): nodes.map(\.minLength).min() ?? 0
-    case .repeat(let node, let min, _, _): node.minLength * min
-    case .group(let node): node.minLength
+    case let .set(s): s.ranges.first.map { UTF8Encoding.length(of: $0.lowerBound) } ?? 0
+    case let .concat(nodes): nodes.reduce(0) { $0 + $1.minLength }
+    case let .alternate(nodes): nodes.map(\.minLength).min() ?? 0
+    case let .repeat(node, min, _, _): node.minLength * min
+    case let .group(node): node.minLength
     }
   }
 }
@@ -120,13 +122,13 @@ enum UTF8Encoding {
   static func encode(_ scalar: UInt32) -> [UInt8] {
     switch scalar {
     case 0..<0x80:
-      return [UInt8(scalar)]
+      [UInt8(scalar)]
     case 0x80..<0x800:
-      return [UInt8(0xC0 | (scalar >> 6)), UInt8(0x80 | (scalar & 0x3F))]
+      [UInt8(0xC0 | (scalar >> 6)), UInt8(0x80 | (scalar & 0x3F))]
     case 0x800..<0x10000:
-      return [UInt8(0xE0 | (scalar >> 12)), UInt8(0x80 | ((scalar >> 6) & 0x3F)), UInt8(0x80 | (scalar & 0x3F))]
+      [UInt8(0xE0 | (scalar >> 12)), UInt8(0x80 | ((scalar >> 6) & 0x3F)), UInt8(0x80 | (scalar & 0x3F))]
     default:
-      return [
+      [
         UInt8(0xF0 | (scalar >> 18)), UInt8(0x80 | ((scalar >> 12) & 0x3F)),
         UInt8(0x80 | ((scalar >> 6) & 0x3F)), UInt8(0x80 | (scalar & 0x3F)),
       ]

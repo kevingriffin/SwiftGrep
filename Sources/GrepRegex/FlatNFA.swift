@@ -22,7 +22,9 @@ struct FlatNFA: Sendable {
   let matchState: Int32
   let looks: LookSet
 
-  var count: Int { kinds.count }
+  var count: Int {
+    kinds.count
+  }
 
   init(_ nfa: NFA) {
     var kinds: [Kind] = []
@@ -35,7 +37,7 @@ struct FlatNFA: Sendable {
     kinds.reserveCapacity(nfa.states.count)
     for state in nfa.states {
       switch state {
-      case .bytes(let set, let next):
+      case let .bytes(set, next):
         let index: Int32
         if let existing = setIndex[set] {
           index = existing
@@ -45,13 +47,13 @@ struct FlatNFA: Sendable {
           setIndex[set] = index
         }
         kinds.append(.bytes); a.append(index); b.append(next)
-      case .sparse(let transitions):
+      case let .sparse(transitions):
         kinds.append(.sparse); a.append(Int32(edges.count)); b.append(Int32(transitions.count))
         edges.append(contentsOf: transitions)
-      case .union(let alts):
+      case let .union(alts):
         kinds.append(.union); a.append(Int32(alternatives.count)); b.append(Int32(alts.count))
         alternatives.append(contentsOf: alts)
-      case .look(let look, let next):
+      case let .look(look, next):
         kinds.append(.look); a.append(Int32(look.rawValue)); b.append(next)
       case .match:
         kinds.append(.match); a.append(0); b.append(0)
@@ -60,15 +62,15 @@ struct FlatNFA: Sendable {
       }
     }
     self.kinds = kinds
-    self.argA = a
-    self.argB = b
+    argA = a
+    argB = b
     self.byteSets = byteSets
     self.edges = edges
     self.alternatives = alternatives
-    self.start = nfa.start
-    self.unanchoredStart = nfa.unanchoredStart
-    self.matchState = nfa.matchState
-    self.looks = nfa.looks
+    start = nfa.start
+    unanchoredStart = nfa.unanchoredStart
+    matchState = nfa.matchState
+    looks = nfa.looks
   }
 
   /// The state reached from `state` by consuming `byte`, or -1.
@@ -82,8 +84,12 @@ struct FlatNFA: Sendable {
       let end = first + Int(argB[state])
       for i in first..<end {
         let e = edges[i]
-        if byte < e.low { return -1 }
-        if byte <= e.high { return e.next }
+        if byte < e.low {
+          return -1
+        }
+        if byte <= e.high {
+          return e.next
+        }
       }
       return -1
     default:
@@ -116,19 +122,27 @@ struct SparseSet: ~Copyable {
   /// Inserts the value, returning false if it was already present.
   @inline(__always) @discardableResult
   mutating func insert(_ value: Int32) -> Bool {
-    if contains(value) { return false }
+    if contains(value) {
+      return false
+    }
     dense[count] = value
     sparse[Int(value)] = Int32(count)
     count += 1
     return true
   }
 
-  @inline(__always) mutating func clear() { count = 0 }
+  @inline(__always) mutating func clear() {
+    count = 0
+  }
 
-  @inline(__always) subscript(index: Int) -> Int32 { dense[index] }
+  @inline(__always) subscript(index: Int) -> Int32 {
+    dense[index]
+  }
 
   /// Index of a member in insertion order.
-  @inline(__always) func index(of value: Int32) -> Int { Int(sparse[Int(value)]) }
+  @inline(__always) func index(of value: Int32) -> Int {
+    Int(sparse[Int(value)])
+  }
 
   mutating func swapContents(with other: inout SparseSet) {
     swap(&dense, &other.dense)
@@ -151,13 +165,17 @@ enum WordChars {
   static let unicode = ScalarSet(table: UnicodeTables.perlWord)
 
   @inline(__always)
-  static func isASCIIWord(_ byte: UInt8) -> Bool { ascii.contains(byte) }
+  static func isASCIIWord(_ byte: UInt8) -> Bool {
+    ascii.contains(byte)
+  }
 
   /// Whether the character starting at `position` is a word character.
   static func isWord(after position: Int, in hay: Span<UInt8>, end: Int, unicode: Bool) -> Bool {
     guard position < end else { return false }
     let b = hay[position]
-    if b < 0x80 || !unicode { return isASCIIWord(b) }
+    if b < 0x80 || !unicode {
+      return isASCIIWord(b)
+    }
     guard let scalar = UTF8Decoding.decode(hay, at: position, end: end) else { return false }
     return Self.unicode.contains(scalar.value)
   }
@@ -166,7 +184,9 @@ enum WordChars {
   static func isWord(before position: Int, in hay: Span<UInt8>, start: Int, unicode: Bool) -> Bool {
     guard position > start else { return false }
     let b = hay[position - 1]
-    if b < 0x80 || !unicode { return isASCIIWord(b) }
+    if b < 0x80 || !unicode {
+      return isASCIIWord(b)
+    }
     guard let scalar = UTF8Decoding.decodeBackward(hay, before: position, start: start) else { return false }
     return Self.unicode.contains(scalar.value)
   }
@@ -176,7 +196,9 @@ enum UTF8Decoding {
   /// Decodes one scalar starting at `i`. Returns nil for invalid UTF-8.
   static func decodeScalar(_ p: Span<UInt8>, at i: Int, end: Int) -> (value: UInt32, length: Int)? {
     let b0 = UInt32(p[i])
-    if b0 < 0x80 { return (b0, 1) }
+    if b0 < 0x80 {
+      return (b0, 1)
+    }
     let length: Int
     var value: UInt32
     switch b0 {
@@ -209,7 +231,9 @@ enum UTF8Decoding {
   static func decodeBackward(_ p: Span<UInt8>, before i: Int, start: Int) -> Unicode.Scalar? {
     var j = i - 1
     let limit = max(start, i - 4)
-    while j > limit && p[j] & 0xC0 == 0x80 { j -= 1 }
+    while j > limit && p[j] & 0xC0 == 0x80 {
+      j -= 1
+    }
     guard let decoded = decodeScalar(p, at: j, end: i), j + decoded.length == i else { return nil }
     return Unicode.Scalar(decoded.value)
   }

@@ -4,7 +4,9 @@ import GrepRegex
 struct FileResult {
   var matchedLines = 0
   var matches = 0
-  var hadMatch: Bool { matchedLines > 0 }
+  var hadMatch: Bool {
+    matchedLines > 0
+  }
 }
 
 /// Emulates where ripgrep stops when it finds binary data.
@@ -20,8 +22,8 @@ enum BinaryDetection {
   /// the NUL byte at `nulOffset`. Always 0 or just past a line terminator.
   static func searchableLength(_ data: Span<UInt8>, nulOffset: Int) -> Int {
     var capacity = bufferCapacity
-    var consumed = 0  // start of unsearched data (lines before it were searched)
-    var filled = 0    // end of data read so far
+    var consumed = 0 // start of unsearched data (lines before it were searched)
+    var filled = 0 // end of data read so far
     while true {
       var free = capacity - (filled - consumed)
       if free <= 0 {
@@ -29,9 +31,13 @@ enum BinaryDetection {
         free = capacity - (filled - consumed)
       }
       let newFilled = min(filled + free, data.count)
-      if nulOffset < newFilled { return consumed }
+      if nulOffset < newFilled {
+        return consumed
+      }
       filled = newFilled
-      if filled == data.count { return data.count }
+      if filled == data.count {
+        return data.count
+      }
       if let lastNewline = data.lastIndex(of: 10, in: consumed..<filled) {
         consumed = lastNewline + 1
       }
@@ -116,7 +122,9 @@ struct FileSearch: ~Copyable {
     var pos = 0
     if !settings.invert {
       while pos <= end, let line = matcher.nextMatchingLine(in: data, from: pos, end: end) {
-        if select(line, data, matcher: &matcher, out: &out) == .stop { break }
+        if select(line, data, matcher: &matcher, out: &out) == .stop {
+          break
+        }
         pos = line.upperBound + 1
       }
     } else {
@@ -125,7 +133,9 @@ struct FileSearch: ~Copyable {
         var p = pos
         while next.map({ p < $0.lowerBound }) ?? (p <= end) {
           let lineEnd = data.firstIndex(of: 10, in: p..<end) ?? end
-          if select(p..<lineEnd, data, matcher: &matcher, out: &out) == .stop { break outer }
+          if select(p..<lineEnd, data, matcher: &matcher, out: &out) == .stop {
+            break outer
+          }
           p = lineEnd + 1
         }
         guard let next else { break }
@@ -158,7 +168,9 @@ struct FileSearch: ~Copyable {
       result.matchedLines += 1
       printSelected(line, data, matcher: &matcher, out: &out)
     }
-    if let max = settings.maxCount, result.matchedLines >= max { return .stop }
+    if let max = settings.maxCount, result.matchedLines >= max {
+      return .stop
+    }
     return .proceed
   }
 

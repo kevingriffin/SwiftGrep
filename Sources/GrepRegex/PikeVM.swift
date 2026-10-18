@@ -24,7 +24,7 @@ struct PikeVM: ~Copyable {
   /// Finds the leftmost-first match within the line `[lineStart, lineEnd)`,
   /// starting the search at `from`.
   mutating func find(
-    in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, from: Int
+    in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, from: Int,
   ) -> Range<Int>? {
     current.clear()
     var matched: Range<Int>? = nil
@@ -33,7 +33,9 @@ struct PikeVM: ~Copyable {
       if matched == nil {
         addThread(toCurrent: true, state: nfa.start, slot: pos, at: pos, hay: hay, lineStart: lineStart, lineEnd: lineEnd)
       }
-      if current.count == 0 { break }
+      if current.count == 0 {
+        break
+      }
       next.clear()
       let byte: UInt8? = pos < lineEnd ? hay[pos] : nil
       var i = 0
@@ -56,7 +58,9 @@ struct PikeVM: ~Copyable {
           continue
         }
       }
-      if pos >= lineEnd { break }
+      if pos >= lineEnd {
+        break
+      }
       current.swapContents(with: &next)
       swap(&currentSlots, &nextSlots)
       pos += 1
@@ -73,7 +77,7 @@ struct PikeVM: ~Copyable {
   /// reachable state to the current or next set.
   private mutating func addThread(
     toCurrent: Bool, state: Int32, slot: Int, at pos: Int,
-    hay: Span<UInt8>, lineStart: Int, lineEnd: Int
+    hay: Span<UInt8>, lineStart: Int, lineEnd: Int,
   ) {
     stack.removeAll(keepingCapacity: true)
     stack.append(state)

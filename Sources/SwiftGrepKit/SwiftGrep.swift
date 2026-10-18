@@ -1,6 +1,6 @@
 import Darwin
-import System
 import GrepRegex
+import System
 
 public enum SwiftGrep {
   public static let version = "0.1.0"
@@ -19,12 +19,12 @@ public enum SwiftGrep {
       case .version:
         writeStdout("sg \(version)\n")
         return 0
-      case .typeList(let additions):
-        writeStdout(try TypeMatcher.listing(additions: additions))
+      case let .typeList(additions):
+        try writeStdout(TypeMatcher.listing(additions: additions))
         return 0
       case .clearCache:
         return ListingCache.clearAll()
-      case .search(let c):
+      case let .search(c):
         config = c
       }
     } catch {
@@ -120,7 +120,8 @@ public enum SwiftGrep {
     let run = SearchRun(
       settings: settings, matcher: matcher, walk: walk, overrides: overrides, types: types, sink: sink,
       queue: WorkQueue(jobs), flushEachFile: isTerminal, separateFiles: separateFiles,
-      sortOutput: config.sort != .none)
+      sortOutput: config.sort != .none,
+    )
 
     if config.debug {
       Diagnostics.error("debug: \(matcher.strategyDescription)")
@@ -138,7 +139,7 @@ public enum SwiftGrep {
     if config.sort != .none {
       sink.finishSorted(reverse: config.sort == .pathReverse)
     }
-    for case .directory(let root) in jobs {
+    for case let .directory(root) in jobs {
       root.cache?.save()
     }
 
@@ -159,16 +160,18 @@ public enum SwiftGrep {
     // Like ripgrep, an implicit search of the current directory that
     // filtered out every file is an error.
     if config.paths.isEmpty, anyDirectory, config.mode != .listFiles, !failed,
-       run.filesSearched.load(ordering: .relaxed) == 0 {
+       run.filesSearched.load(ordering: .relaxed) == 0
+    {
       Diagnostics.error("No files were searched, which means SwiftGrep probably applied a filter you didn't expect.")
       return 2
     }
-    if failed && !(config.mode == .quiet && matched) { return 2 }
+    if failed && !(config.mode == .quiet && matched) {
+      return 2
+    }
     return matched ? 0 : 1
   }
 
   private typealias Clock = ContinuousClock
-
 
   private static func format3(_ value: Double) -> String {
     let millis = Int((value * 1000).rounded())
@@ -196,7 +199,8 @@ public enum SwiftGrep {
     walk.ignore.requireGit = !config.noRequireGit
     walk.useIgnoreFiles = walk.ignore.useGitignore || walk.ignore.useDotIgnore
     if walk.ignore.useGlobalGitignore, let path = GitConfig.globalExcludesFile(),
-       let data = try? FileIO.readWholeFile(path: path) {
+       let data = try? FileIO.readWholeFile(path: path)
+    {
       let rules = IgnoreRules(gitignore: data)
       walk.ignore.global = rules.rules.isEmpty ? nil : rules
     }
@@ -225,7 +229,9 @@ public enum SwiftGrep {
     while let slash = current.lastIndex(of: UInt8(ascii: "/")) {
       current = Array(current[..<slash])
       ancestors.append(current.isEmpty ? [UInt8(ascii: "/")] : current)
-      if current.isEmpty { break }
+      if current.isEmpty {
+        break
+      }
     }
     var level: IgnoreLevel? = nil
     for directory in ancestors.reversed() {
@@ -260,11 +266,10 @@ public enum SwiftGrep {
   }
 
   static func resolveSettings(_ config: Configuration, isTerminal: Bool, multipleTargets: Bool) -> OutputSettings {
-    let color: Bool
-    switch config.color {
-    case .never: color = false
-    case .always, .ansi: color = true
-    case .auto: color = isTerminal && FileIO.environment("TERM") != "dumb"
+    let color: Bool = switch config.color {
+    case .never: false
+    case .always, .ansi: true
+    case .auto: isTerminal && FileIO.environment("TERM") != "dumb"
     }
     let printsLines = config.mode == .lines || config.mode == .onlyMatching
     return OutputSettings(
@@ -283,6 +288,7 @@ public enum SwiftGrep {
       includeZero: config.includeZero,
       binary: config.binary,
       stripByteOrderMark: config.stripByteOrderMark,
-      contextSeparator: config.contextSeparator)
+      contextSeparator: config.contextSeparator,
+    )
   }
 }

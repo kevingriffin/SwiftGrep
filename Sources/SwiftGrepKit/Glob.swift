@@ -91,7 +91,9 @@ struct Glob: Sendable, Hashable {
         i += 2
       case UInt8(ascii: "*"):
         var j = i
-        while j < n && source[j] == UInt8(ascii: "*") { j += 1 }
+        while j < n && source[j] == UInt8(ascii: "*") {
+          j += 1
+        }
         let count = j - i
         let atSegmentStart = i == 0 || source[i - 1] == UInt8(ascii: "/")
         let atSegmentEnd = j == n || source[j] == UInt8(ascii: "/")
@@ -105,7 +107,9 @@ struct Glob: Sendable, Hashable {
             i = j + 1 // also consume the slash
           }
         } else {
-          if tokens.last?.kind != .star { add(.star) }
+          if tokens.last?.kind != .star {
+            add(.star)
+          }
           i = j
         }
       case UInt8(ascii: "?"):
@@ -164,11 +168,19 @@ struct Glob: Sendable, Hashable {
     var first = true
     func scalar(at index: inout Int) -> UInt32? {
       guard index < s.count else { return nil }
-      if s[index] == UInt8(ascii: "\\"), index + 1 < s.count { index += 1 }
+      if s[index] == UInt8(ascii: "\\"), index + 1 < s.count {
+        index += 1
+      }
       // Decode one UTF-8 scalar.
       let b0 = s[index]
       var length = 1
-      if b0 >= 0xF0 { length = 4 } else if b0 >= 0xE0 { length = 3 } else if b0 >= 0xC0 { length = 2 }
+      if b0 >= 0xF0 {
+        length = 4
+      } else if b0 >= 0xE0 {
+        length = 3
+      } else if b0 >= 0xC0 {
+        length = 2
+      }
       guard index + length <= s.count else { return nil }
       let decoded = String(decoding: s[index..<(index + length)], as: UTF8.self).unicodeScalars.first?.value
       index += length
@@ -183,7 +195,9 @@ struct Glob: Sendable, Hashable {
       if i + 1 < s.count, s[i] == UInt8(ascii: "-"), s[i + 1] != UInt8(ascii: "]") {
         i += 1
         guard let high = scalar(at: &i) else { return nil }
-        if low <= high { ranges.append(low...high) }
+        if low <= high {
+          ranges.append(low...high)
+        }
       } else {
         ranges.append(low...low)
       }
@@ -206,7 +220,9 @@ struct Glob: Sendable, Hashable {
     case .suffix:
       guard literal.count <= count else { return false }
       // The star must not cross a slash.
-      if anchored, path.firstIndex(of: slash, in: start..<(path.count - literal.count)) != nil { return false }
+      if anchored, path.firstIndex(of: slash, in: start..<(path.count - literal.count)) != nil {
+        return false
+      }
       return equal(path, at: path.count - literal.count, literal)
     case .prefix:
       guard literal.count <= count, equal(path, at: start, literal) else { return false }
@@ -237,12 +253,16 @@ struct Glob: Sendable, Hashable {
     var k = 0
     if caseInsensitive {
       while k < literal.count {
-        if lower(path[offset + k]) != literal[k] { return false }
+        if lower(path[offset + k]) != literal[k] {
+          return false
+        }
         k += 1
       }
     } else {
       while k < literal.count {
-        if path[offset + k] != literal[k] { return false }
+        if path[offset + k] != literal[k] {
+          return false
+        }
         k += 1
       }
     }
@@ -276,7 +296,7 @@ struct Glob: Sendable, Hashable {
 
   private func simulate(
     _ path: Span<UInt8>, from start: Int, words: Int,
-    _ reached: inout MutableSpan<UInt64>, _ next: inout MutableSpan<UInt64>
+    _ reached: inout MutableSpan<UInt64>, _ next: inout MutableSpan<UInt64>,
   ) -> Bool {
     let length = path.count - start
     let slash = UInt8(ascii: "/")
@@ -290,7 +310,9 @@ struct Glob: Sendable, Hashable {
     }
     reached[0] = 1
     for token in tokens {
-      for w in 0..<words { next[w] = 0 }
+      for w in 0..<words {
+        next[w] = 0
+      }
       var any = false
       switch token.kind {
       case .literal:
@@ -344,12 +366,16 @@ struct Glob: Sendable, Hashable {
             insert(&next, q)
             any = true
           }
-          if isSet(reached, q) { seen = true }
+          if isSet(reached, q) {
+            seen = true
+          }
         }
       case .anything:
         var seen = false
         for q in 0...length {
-          if isSet(reached, q) { seen = true }
+          if isSet(reached, q) {
+            seen = true
+          }
           if seen {
             insert(&next, q)
             any = true
@@ -357,7 +383,9 @@ struct Glob: Sendable, Hashable {
         }
       }
       guard any else { return false }
-      for w in 0..<words { reached[w] = next[w] }
+      for w in 0..<words {
+        reached[w] = next[w]
+      }
     }
     return isSet(reached, length)
   }

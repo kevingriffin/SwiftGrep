@@ -26,7 +26,7 @@ struct LiteralExtractor {
       return .emptyString
     case .look:
       return Info(exact: [[]], precise: false, required: nil)
-    case .char(let c):
+    case let .char(c):
       var bytes = UTF8Encoding.encode(c)
       var precise = true
       if foldASCII, bytes.count == 1, isASCIILetter(bytes[0]) {
@@ -34,21 +34,21 @@ struct LiteralExtractor {
         precise = false // a case-sensitive letter, but searched case-insensitively
       }
       return Info(exact: [bytes], precise: precise, required: [bytes])
-    case .byte(let b):
+    case let .byte(b):
       return Info(exact: [[b]], precise: true, required: [[b]])
-    case .byteSet(let set):
+    case let .byteSet(set):
       guard set.count <= 16 else { return .unknown }
       let strings = set.ranges.flatMap { r in (r.lowerBound...r.upperBound).map { [UInt8($0)] } }
       return Info(exact: strings, precise: true, required: strings)
-    case .set(let set):
+    case let .set(set):
       return extractSet(set.removing(10))
-    case .group(let inner):
+    case let .group(inner):
       return extract(inner)
-    case .concat(let nodes):
+    case let .concat(nodes):
       return extractConcat(nodes)
-    case .alternate(let nodes):
+    case let .alternate(nodes):
       return extractAlternation(nodes)
-    case .repeat(let inner, let min, let max, _):
+    case let .repeat(inner, min, max, _):
       return extractRepeat(inner, min: min, max: max)
     }
   }
@@ -67,10 +67,14 @@ struct LiteralExtractor {
         var bytes = UTF8Encoding.encode(c)
         if foldASCII, bytes.count == 1, isASCIILetter(bytes[0]) {
           // Folding is only exact if the other case is in the set too.
-          if !set.contains(c ^ 0x20) { precise = false }
+          if !set.contains(c ^ 0x20) {
+            precise = false
+          }
           bytes[0] |= 0x20
         }
-        if seen.insert(bytes).inserted { strings.append(bytes) }
+        if seen.insert(bytes).inserted {
+          strings.append(bytes)
+        }
       }
     }
     return Info(exact: strings, precise: precise, required: strings)
@@ -84,8 +88,12 @@ struct LiteralExtractor {
     for x in a {
       for y in b {
         let s = x + y
-        if s.count > maxLength { return nil }
-        if seen.insert(s).inserted { result.append(s) }
+        if s.count > maxLength {
+          return nil
+        }
+        if seen.insert(s).inserted {
+          result.append(s)
+        }
       }
     }
     return result
@@ -106,7 +114,9 @@ struct LiteralExtractor {
       // The run cannot be extended: keep it as a candidate and start over.
       allExact = false
       candidates.append(run)
-      if let required = info.required { candidates.append(required) }
+      if let required = info.required {
+        candidates.append(required)
+      }
       if let exact = info.exact {
         run = exact
         runPrecise = info.precise
@@ -133,18 +143,22 @@ struct LiteralExtractor {
         exact = nil
         break
       }
-      for s in e where seen.insert(s).inserted { acc.append(s) }
+      for s in e where seen.insert(s).inserted {
+        acc.append(s)
+      }
       precise = precise && info.precise
       exact = acc.count <= maxStrings ? acc : nil
     }
     var required: [[UInt8]]? = []
     var requiredSeen = Set<[UInt8]>()
     for info in infos {
-      guard let best = Self.best(of: [info.exact, info.required].compactMap { $0 }), var acc = required else {
+      guard let best = Self.best(of: [info.exact, info.required].compactMap(\.self)), var acc = required else {
         required = nil
         break
       }
-      for s in best where requiredSeen.insert(s).inserted { acc.append(s) }
+      for s in best where requiredSeen.insert(s).inserted {
+        acc.append(s)
+      }
       required = acc.count <= maxStrings ? acc : nil
     }
     return Info(exact: exact, precise: exact != nil && precise, required: required)
@@ -155,12 +169,14 @@ struct LiteralExtractor {
     if min == 0 {
       if max == 1, let e = info.exact, e.count < maxStrings {
         var strings = e
-        if !strings.contains([]) { strings.append([]) }
+        if !strings.contains([]) {
+          strings.append([])
+        }
         return Info(exact: strings, precise: info.precise, required: nil)
       }
       return .unknown
     }
-    let required = Self.best(of: [info.exact, info.required].compactMap { $0 })
+    let required = Self.best(of: [info.exact, info.required].compactMap(\.self))
     if let max, max == min, let e = info.exact {
       var result: [[UInt8]]? = [[]]
       for _ in 0..<min {
@@ -168,7 +184,7 @@ struct LiteralExtractor {
         result = cross(r, e)
       }
       if let result {
-        return Info(exact: result, precise: info.precise, required: Self.best(of: [result, required].compactMap { $0 }))
+        return Info(exact: result, precise: info.precise, required: Self.best(of: [result, required].compactMap(\.self)))
       }
     }
     return Info(exact: nil, precise: false, required: required)
@@ -182,7 +198,9 @@ struct LiteralExtractor {
     var probs = literal.map { ByteFrequencies.table[Int($0)] }
     probs.sort()
     var p = probs[0]
-    if probs.count > 1 { p *= Swift.min(1, probs[1] * 8) }
+    if probs.count > 1 {
+      p *= Swift.min(1, probs[1] * 8)
+    }
     return p
   }
 
@@ -192,7 +210,9 @@ struct LiteralExtractor {
     var total: Float = 0
     for s in set {
       let c = cost(of: s)
-      if c == .infinity { return .infinity }
+      if c == .infinity {
+        return .infinity
+      }
       total += c
     }
     return total

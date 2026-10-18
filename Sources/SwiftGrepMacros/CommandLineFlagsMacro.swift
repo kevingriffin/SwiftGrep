@@ -34,7 +34,7 @@ public struct CommandLineFlagsMacro: MemberMacro {
     of node: AttributeSyntax,
     providingMembersOf declaration: some DeclGroupSyntax,
     conformingTo protocols: [TypeSyntax],
-    in context: some MacroExpansionContext
+    in context: some MacroExpansionContext,
   ) throws -> [DeclSyntax] {
     guard let enumDecl = declaration.as(EnumDeclSyntax.self) else {
       context.diagnose(Diagnostic(node: node, message: Message.error("@CommandLineFlags only applies to enums")))
@@ -58,7 +58,7 @@ public struct CommandLineFlagsMacro: MemberMacro {
       let name = element.name.text
       var section: String? = nil
       var spelling: AttributeSyntax? = nil
-      for case .attribute(let attribute) in caseDecl.attributes {
+      for case let .attribute(attribute) in caseDecl.attributes {
         switch attribute.attributeName.trimmedDescription {
         case "Section": section = stringArguments(attribute).first
         case "Spelling": spelling = attribute
@@ -109,7 +109,9 @@ public struct CommandLineFlagsMacro: MemberMacro {
           shorts[short] = name
         }
       }
-      if let other = longs[spec.long] { fail(spelling, "--\(spec.long) is already used by '\(other)'") }
+      if let other = longs[spec.long] {
+        fail(spelling, "--\(spec.long) is already used by '\(other)'")
+      }
       longs[spec.long] = longs[spec.long] ?? name
       spec.aliases = spec.aliases.filter { alias in
         if let other = longs[alias] {
@@ -170,12 +172,16 @@ public struct CommandLineFlagsMacro: MemberMacro {
     var lines: [String] = []
     for spec in specs where !spec.hidden {
       if let section = spec.section {
-        if !lines.isEmpty { lines.append("") }
+        if !lines.isEmpty {
+          lines.append("")
+        }
         lines.append("\(section):")
       }
       var flag = spec.short.map { "    -\($0), " } ?? "        "
       flag += "--\(spec.long)"
-      if let value = spec.value { flag += " \(value)" }
+      if let value = spec.value {
+        flag += " \(value)"
+      }
       var words = spec.help.split(separator: " ").map(String.init)
       var line = flag
       if line.count + 2 > column {
@@ -192,7 +198,9 @@ public struct CommandLineFlagsMacro: MemberMacro {
         lines.append(line + text)
         line = ""
       }
-      if spec.help.isEmpty { lines.append(line) }
+      if spec.help.isEmpty {
+        lines.append(line)
+      }
     }
     return lines.joined(separator: "\n")
   }
@@ -205,7 +213,7 @@ public struct CommandLineFlagsMacro: MemberMacro {
     guard let literal = expression.as(StringLiteralExprSyntax.self) else { return nil }
     var text = ""
     for segment in literal.segments {
-      guard case .stringSegment(let part) = segment else { return nil }
+      guard case let .stringSegment(part) = segment else { return nil }
       text += part.content.text
     }
     return text
@@ -229,11 +237,17 @@ public struct CommandLineFlagsMacro: MemberMacro {
     case error(String)
     var message: String {
       switch self {
-      case .error(let text): text
+      case let .error(text): text
       }
     }
-    var diagnosticID: MessageID { MessageID(domain: "SwiftGrepMacros", id: "CommandLineFlags") }
-    var severity: DiagnosticSeverity { .error }
+
+    var diagnosticID: MessageID {
+      MessageID(domain: "SwiftGrepMacros", id: "CommandLineFlags")
+    }
+
+    var severity: DiagnosticSeverity {
+      .error
+    }
   }
 }
 
@@ -242,7 +256,7 @@ public struct MarkerMacro: PeerMacro {
   public static func expansion(
     of node: AttributeSyntax,
     providingPeersOf declaration: some DeclSyntaxProtocol,
-    in context: some MacroExpansionContext
+    in context: some MacroExpansionContext,
   ) throws -> [DeclSyntax] {
     []
   }

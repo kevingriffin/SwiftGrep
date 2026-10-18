@@ -17,7 +17,7 @@ struct Parser {
 
   init(_ pattern: String, flags: ParseFlags) {
     self.pattern = pattern
-    self.chars = Array(pattern.unicodeScalars)
+    chars = Array(pattern.unicodeScalars)
     self.flags = flags
   }
 
@@ -36,8 +36,14 @@ struct Parser {
     RegexError(message: message, pattern: pattern, offset: offset ?? pos)
   }
 
-  private var atEnd: Bool { pos >= chars.count }
-  private var current: Unicode.Scalar? { pos < chars.count ? chars[pos] : nil }
+  private var atEnd: Bool {
+    pos >= chars.count
+  }
+
+  private var current: Unicode.Scalar? {
+    pos < chars.count ? chars[pos] : nil
+  }
+
   private func peek(_ offset: Int = 1) -> Unicode.Scalar? {
     pos + offset < chars.count ? chars[pos + offset] : nil
   }
@@ -48,7 +54,9 @@ struct Parser {
       if c.properties.isWhitespace {
         pos += 1
       } else if c == "#" {
-        while let d = current, d != "\n" { pos += 1 }
+        while let d = current, d != "\n" {
+          pos += 1
+        }
       } else {
         break
       }
@@ -60,10 +68,10 @@ struct Parser {
   private mutating func parseAlternation(depth: Int) throws(RegexError) -> RegexNode {
     guard depth < 250 else { throw error("exceeds the nesting limit") }
     let savedFlags = flags
-    var branches: [RegexNode] = [try parseConcat(depth: depth)]
+    var branches: [RegexNode] = try [parseConcat(depth: depth)]
     while current == "|" {
       pos += 1
-      branches.append(try parseConcat(depth: depth))
+      try branches.append(parseConcat(depth: depth))
     }
     // Inline flags like `(?i)` only last until the end of the enclosing group.
     flags = savedFlags
@@ -87,7 +95,7 @@ struct Parser {
       default:
         atom = try parseAtom()
       }
-      items.append(try parseRepetitions(atom))
+      try items.append(parseRepetitions(atom))
     }
     switch items.count {
     case 0: return .empty
@@ -120,7 +128,9 @@ struct Parser {
         greedy = false
         pos += 1
       }
-      if flags.swapGreed { greedy.toggle() }
+      if flags.swapGreed {
+        greedy.toggle()
+      }
       if let max, max < min {
         throw error("invalid repetition count range, the start must be <= the end", at: opStart)
       }
@@ -152,7 +162,9 @@ struct Parser {
       skipWhitespaceIfExtended()
       hi = parseDecimal()
       skipWhitespaceIfExtended()
-      if lo == nil && hi == nil { throw error("repetition quantifier expects a valid decimal", at: open) }
+      if lo == nil && hi == nil {
+        throw error("repetition quantifier expects a valid decimal", at: open)
+      }
     } else if lo == nil {
       throw error("repetition quantifier expects a valid decimal", at: open)
     }
@@ -173,7 +185,9 @@ struct Parser {
       pos += 1
       switch current {
       case "P" where peek() == "<", "<" where peek() != "=" && peek() != "!":
-        if current == "P" { pos += 1 }
+        if current == "P" {
+          pos += 1
+        }
         pos += 1 // <
         let nameStart = pos
         while let c = current, c != ">" {
@@ -209,11 +223,15 @@ struct Parser {
           default:
             throw error("unrecognized flag", at: pos)
           }
-          if c != "-" { sawFlag = true }
+          if c != "-" {
+            sawFlag = true
+          }
           pos += 1
         }
         guard let terminator = current else { throw error("unclosed group", at: open) }
-        if negate && !sawFlag { throw error("expected flag but got end of flags", at: pos) }
+        if negate && !sawFlag {
+          throw error("expected flag but got end of flags", at: pos)
+        }
         pos += 1
         if terminator == ")" {
           flags = newFlags
@@ -382,7 +400,9 @@ struct Parser {
 
   private func classNode(_ set: ScalarSet, negated: Bool) -> RegexNode {
     var s = flags.caseInsensitive ? set.caseFolded() : set
-    if negated { s = s.inverted() }
+    if negated {
+      s = s.inverted()
+    }
     return .set(s)
   }
 
@@ -452,15 +472,16 @@ struct Parser {
     var first = true
     while true {
       guard let c = current else { throw error("unclosed character class", at: open) }
-      if c == "]" && !first { pos += 1; break }
+      if c == "]" && !first {
+        pos += 1; break
+      }
       first = false
       // Set operators.
       if (c == "&" && peek() == "&") || (c == "-" && peek() == "-") || (c == "~" && peek() == "~") {
-        let op: (ScalarSet, ScalarSet) -> ScalarSet
-        switch c {
-        case "&": op = { $0.intersection($1) }
-        case "-": op = { $0.subtracting($1) }
-        default: op = { $0.symmetricDifference($1) }
+        let op: (ScalarSet, ScalarSet) -> ScalarSet = switch c {
+        case "&": { $0.intersection($1) }
+        case "-": { $0.subtracting($1) }
+        default: { $0.symmetricDifference($1) }
         }
         pos += 2
         let left = pendingOp.map { $0(lhs ?? ScalarSet(), result) } ?? result
@@ -469,19 +490,21 @@ struct Parser {
         result = ScalarSet()
         continue
       }
-      if flags.ignoreWhitespace, c.properties.isWhitespace { pos += 1; continue }
+      if flags.ignoreWhitespace, c.properties.isWhitespace {
+        pos += 1; continue
+      }
       if c == "[" {
-        if peek() == ":" , let posix = try parsePosixClass() {
+        if peek() == ":", let posix = try parsePosixClass() {
           result.formUnion(posix)
           continue
         }
-        result.formUnion(try parseClassBody())
+        try result.formUnion(parseClassBody())
         continue
       }
       if c == "\\", let next = peek(), "dDsSwWpP".unicodeScalars.contains(next) {
         pos += 2
         if next == "p" || next == "P" {
-          result.formUnion(try parseUnicodeClass(negated: next == "P", start: pos - 2))
+          try result.formUnion(parseUnicodeClass(negated: next == "P", start: pos - 2))
         } else {
           let base = perlClass(next)
           result.formUnion(next.properties.isUppercase ? base.inverted() : base)
@@ -498,15 +521,23 @@ struct Parser {
         result.insert(low...low)
       }
     }
-    if let pendingOp { result = pendingOp(lhs ?? ScalarSet(), result) }
-    if flags.caseInsensitive { result = result.caseFolded() }
-    if negated { result = result.inverted() }
+    if let pendingOp {
+      result = pendingOp(lhs ?? ScalarSet(), result)
+    }
+    if flags.caseInsensitive {
+      result = result.caseFolded()
+    }
+    if negated {
+      result = result.inverted()
+    }
     return result
   }
 
   private mutating func parseClassChar() throws(RegexError) -> UInt32 {
     guard let c = current else { throw error("unclosed character class") }
-    if c == "\\" { return try parseEscapedScalar() }
+    if c == "\\" {
+      return try parseEscapedScalar()
+    }
     pos += 1
     return c.value
   }
@@ -586,7 +617,9 @@ enum UnicodeClasses {
     if let categories = categoryAliases[name] {
       var set = ScalarSet()
       for c in categories {
-        if let table = UnicodeTables.generalCategory(c) { set.formUnion(ScalarSet(table: table)) }
+        if let table = UnicodeTables.generalCategory(c) {
+          set.formUnion(ScalarSet(table: table))
+        }
       }
       return set
     }
@@ -615,8 +648,11 @@ enum UnicodeClasses {
   private static func unassigned() -> ScalarSet {
     var assigned = ScalarSet()
     for c in ["Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "No", "Pc", "Pd", "Ps", "Pe",
-              "Pi", "Pf", "Po", "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co"] {
-      if let table = UnicodeTables.generalCategory(c) { assigned.formUnion(ScalarSet(table: table)) }
+              "Pi", "Pf", "Po", "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc", "Cf", "Cs", "Co"]
+    {
+      if let table = UnicodeTables.generalCategory(c) {
+        assigned.formUnion(ScalarSet(table: table))
+      }
     }
     return assigned.inverted()
   }

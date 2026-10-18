@@ -10,14 +10,18 @@ func ranges(where predicate: (Unicode.Scalar) -> Bool) -> [(UInt32, UInt32)] {
   while value <= 0x10FFFF {
     let included = Unicode.Scalar(value).map(predicate) ?? false
     if included {
-      if start == nil { start = value }
+      if start == nil {
+        start = value
+      }
     } else if let s = start {
       result.append((s, value - 1))
       start = nil
     }
     value += 1
   }
-  if let s = start { result.append((s, 0x10FFFF)) }
+  if let s = start {
+    result.append((s, 0x10FFFF))
+  }
   return result
 }
 
@@ -32,7 +36,9 @@ func emit(_ name: String, _ ranges: [(UInt32, UInt32)]) {
     }
     line += item
   }
-  if line != "   " { print(line) }
+  if line != "   " {
+    print(line)
+  }
   print("  ]")
 }
 
@@ -86,31 +92,37 @@ print("""
 for (name, _) in categories where name != "Cn" {
   print("    case \"\(name)\": category\(name)")
 }
+
 print("""
     default: nil
     }
   }
 """)
 
-// Simple case folding orbits (CaseFolding.txt statuses C and S): scalars are
-// grouped by their simple case fold. The standard library does not expose the
-// fold directly, so it is derived from the case mappings, guarded by
-// `changesWhenCaseFolded` so that e.g. dotless i (U+0131) stays on its own.
+/// Simple case folding orbits (CaseFolding.txt statuses C and S): scalars are
+/// grouped by their simple case fold. The standard library does not expose the
+/// fold directly, so it is derived from the case mappings, guarded by
+/// `changesWhenCaseFolded` so that e.g. dotless i (U+0131) stays on its own.
 func single(_ s: String) -> UInt32? {
   let scalars = s.unicodeScalars
   guard scalars.count == 1 else { return nil }
   return scalars.first!.value
 }
+
 func simpleFold(_ scalar: Unicode.Scalar) -> UInt32 {
   let p = scalar.properties
   guard p.changesWhenCaseFolded else { return scalar.value }
-  if let lower = single(p.lowercaseMapping), lower != scalar.value { return lower }
+  if let lower = single(p.lowercaseMapping), lower != scalar.value {
+    return lower
+  }
   if let upper = single(p.uppercaseMapping), let u = Unicode.Scalar(upper),
-     let lower = single(u.properties.lowercaseMapping), lower != scalar.value {
+     let lower = single(u.properties.lowercaseMapping), lower != scalar.value
+  {
     return lower
   }
   return scalar.value
 }
+
 var orbits: [UInt32: [UInt32]] = [:]
 for value in UInt32(0)...0x10FFFF {
   guard let scalar = Unicode.Scalar(value) else { continue }
@@ -119,10 +131,16 @@ for value in UInt32(0)...0x10FFFF {
     orbits[folded, default: [folded]].append(value)
   }
 }
+
 var pairs: [(UInt32, UInt32)] = []
 for (_, members) in orbits where members.count > 1 {
-  for a in members { for b in members where a != b { pairs.append((a, b)) } }
+  for a in members {
+    for b in members where a != b {
+      pairs.append((a, b))
+    }
+  }
 }
+
 pairs.sort { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
 emit("caseFoldPairs", pairs)
 print("}")

@@ -9,7 +9,7 @@ macro CommandLineFlags() = #externalMacro(module: "SwiftGrepMacros", type: "Comm
 /// A flag's short and long spellings, its value name and help.
 @attached(peer)
 macro Spelling(
-  _ spellings: String..., value: String? = nil, help: String = "", aliases: [String] = [], hidden: Bool = false
+  _ spellings: String..., value: String? = nil, help: String = "", aliases: [String] = [], hidden: Bool = false,
 ) = #externalMacro(module: "SwiftGrepMacros", type: "MarkerMacro")
 
 /// Starts a section of `--help`.
@@ -208,7 +208,9 @@ public enum ArgumentParser {
         var lines = String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false).map {
           $0.hasSuffix("\r") ? String($0.dropLast()) : String($0)
         }
-        if lines.last == "" { lines.removeLast() }
+        if lines.last == "" {
+          lines.removeLast()
+        }
         explicitPatterns = (explicitPatterns ?? []) + lines
       case .fixedStrings: config.matcher.fixedStrings = true
       case .ignoreCase: config.matcher.caseMode = .insensitive
@@ -275,9 +277,15 @@ public enum ArgumentParser {
       case .noRequireGit: config.noRequireGit = true
       case .unrestricted:
         unrestricted += 1
-        if unrestricted >= 1 { config.noIgnore = true }
-        if unrestricted >= 2 { config.hidden = true }
-        if unrestricted >= 3 { config.binary = .search }
+        if unrestricted >= 1 {
+          config.noIgnore = true
+        }
+        if unrestricted >= 2 {
+          config.hidden = true
+        }
+        if unrestricted >= 3 {
+          config.binary = .search
+        }
       case .follow: config.followLinks = true
       case .maxDepth: config.maxDepth = try number(v, flag)
       case .maxFilesize: config.maxFilesize = try parseSize(v)
@@ -340,7 +348,9 @@ public enum ArgumentParser {
         } else if value != nil {
           throw UsageError("flag --\(name) does not take a value")
         }
-        if let command = try apply(flag, value) { return command }
+        if let command = try apply(flag, value) {
+          return command
+        }
         continue
       }
       // A cluster of short flags, e.g. -inC2.
@@ -354,7 +364,9 @@ public enum ArgumentParser {
         if flag.takesValue {
           if j < chars.count {
             var rest = String(chars[j...])
-            if rest.hasPrefix("=") { rest.removeFirst() }
+            if rest.hasPrefix("=") {
+              rest.removeFirst()
+            }
             value = rest
             j = chars.count
           } else {
@@ -363,11 +375,15 @@ public enum ArgumentParser {
             i += 1
           }
         }
-        if let command = try apply(flag, value) { return command }
+        if let command = try apply(flag, value) {
+          return command
+        }
       }
     }
 
-    if wantsTypeList { return .typeList(config.typeAdditions) }
+    if wantsTypeList {
+      return .typeList(config.typeAdditions)
+    }
     if let explicitPatterns {
       config.patterns = explicitPatterns
     } else if config.mode != .listFiles {
@@ -389,7 +405,9 @@ public enum ArgumentParser {
     case "G": multiplier = 1 << 30
     default: break
     }
-    if multiplier > 1 { digits.removeLast() }
+    if multiplier > 1 {
+      digits.removeLast()
+    }
     guard let n = Int64(digits), n >= 0 else { throw UsageError("invalid --max-filesize value '\(text)'") }
     return n * multiplier
   }

@@ -3,14 +3,18 @@
 struct ScalarSet: Hashable, Sendable {
   private(set) var ranges: [ClosedRange<UInt32>]
 
-  init() { ranges = [] }
+  init() {
+    ranges = []
+  }
 
   init(_ ranges: some Sequence<ClosedRange<UInt32>>) {
     self.ranges = Array(ranges)
     canonicalize()
   }
 
-  init(scalar: UInt32) { ranges = [scalar...scalar] }
+  init(scalar: UInt32) {
+    ranges = [scalar...scalar]
+  }
 
   /// Builds a set from a generated flat table of (low, high) pairs.
   init(table: [UInt32]) {
@@ -28,7 +32,9 @@ struct ScalarSet: Hashable, Sendable {
   static let maxScalar: UInt32 = 0x10FFFF
   static let all = ScalarSet([0...maxScalar])
 
-  var isEmpty: Bool { ranges.isEmpty }
+  var isEmpty: Bool {
+    ranges.isEmpty
+  }
 
   /// The single scalar in this set, if it contains exactly one.
   var singleScalar: UInt32? {
@@ -37,9 +43,13 @@ struct ScalarSet: Hashable, Sendable {
   }
 
   /// Number of scalars in the set.
-  var count: Int { ranges.reduce(0) { $0 + Int($1.upperBound - $1.lowerBound) + 1 } }
+  var count: Int {
+    ranges.reduce(0) { $0 + Int($1.upperBound - $1.lowerBound) + 1 }
+  }
 
-  var isASCII: Bool { ranges.last.map { $0.upperBound < 0x80 } ?? true }
+  var isASCII: Bool {
+    ranges.last.map { $0.upperBound < 0x80 } ?? true
+  }
 
   func contains(_ value: UInt32) -> Bool {
     var lo = 0
@@ -80,15 +90,21 @@ struct ScalarSet: Hashable, Sendable {
     var result: [ClosedRange<UInt32>] = []
     var next: UInt32 = 0
     for r in ranges {
-      if r.lowerBound > upperBound { break }
-      if r.lowerBound > next { result.append(next...(r.lowerBound - 1)) }
+      if r.lowerBound > upperBound {
+        break
+      }
+      if r.lowerBound > next {
+        result.append(next...(r.lowerBound - 1))
+      }
       if r.upperBound >= upperBound {
         next = upperBound + 1
         break
       }
       next = r.upperBound + 1
     }
-    if next <= upperBound { result.append(next...upperBound) }
+    if next <= upperBound {
+      result.append(next...upperBound)
+    }
     var set = ScalarSet()
     set.ranges = result
     return set
@@ -103,8 +119,14 @@ struct ScalarSet: Hashable, Sendable {
       let b = other.ranges[j]
       let lo = max(a.lowerBound, b.lowerBound)
       let hi = min(a.upperBound, b.upperBound)
-      if lo <= hi { result.append(lo...hi) }
-      if a.upperBound < b.upperBound { i += 1 } else { j += 1 }
+      if lo <= hi {
+        result.append(lo...hi)
+      }
+      if a.upperBound < b.upperBound {
+        i += 1
+      } else {
+        j += 1
+      }
     }
     var set = ScalarSet()
     set.ranges = result
@@ -168,7 +190,11 @@ enum CaseFolding {
     var hi = pairCount
     while lo < hi {
       let mid = (lo + hi) / 2
-      if table[mid * 2] < range.lowerBound { lo = mid + 1 } else { hi = mid }
+      if table[mid * 2] < range.lowerBound {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
     }
     var i = lo
     while i < pairCount, table[i * 2] <= range.upperBound {

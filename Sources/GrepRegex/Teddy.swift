@@ -47,7 +47,7 @@ struct TeddyFinder: Sendable {
     self.minLength = minLength
     self.width = width
 
-    /// The byte values a position accepts: one, or both cases of a letter.
+    // The byte values a position accepts: one, or both cases of a letter.
     func variants(_ i: Int, _ k: Int) -> [UInt8] {
       let b = bytes[starts[i] + k]
       return masks[starts[i] + k] != 0 ? [b, b & ~0x20] : [b]
@@ -78,11 +78,15 @@ struct TeddyFinder: Sendable {
     var order: [[UInt8]] = []
     for i in raw.indices {
       let key = Array(bytes[(starts[i] + bestOffset)..<(starts[i] + bestOffset + width)])
-      if groups[key] == nil { order.append(key) }
+      if groups[key] == nil {
+        order.append(key)
+      }
       groups[key, default: []].append(i)
     }
     var buckets = [[Int]](repeating: [], count: 8)
-    for (g, key) in order.enumerated() { buckets[g % 8].append(contentsOf: groups[key]!) }
+    for (g, key) in order.enumerated() {
+      buckets[g % 8].append(contentsOf: groups[key]!)
+    }
 
     var low = InlineArray<3, SIMD16<UInt8>>(repeating: SIMD16(repeating: 0))
     var high = InlineArray<3, SIMD16<UInt8>>(repeating: SIMD16(repeating: 0))
@@ -100,7 +104,7 @@ struct TeddyFinder: Sendable {
     self.low = low
     self.high = high
     self.bytes = bytes
-    self.foldMasks = masks
+    foldMasks = masks
     self.starts = starts
     var bucketStarts = [0]
     var bucketItems: [Int] = []
@@ -138,8 +142,12 @@ struct TeddyFinder: Sendable {
     func candidates(at s: Int) -> SIMD16<UInt8> {
       let w = s &+ offset
       var r = lookup(l0, h0, SIMDBytes.load(bytes, w))
-      if width > 1 { r &= lookup(l1, h1, SIMDBytes.load(bytes, w &+ 1)) }
-      if width > 2 { r &= lookup(l2, h2, SIMDBytes.load(bytes, w &+ 2)) }
+      if width > 1 {
+        r &= lookup(l1, h1, SIMDBytes.load(bytes, w &+ 1))
+      }
+      if width > 2 {
+        r &= lookup(l2, h2, SIMDBytes.load(bytes, w &+ 2))
+      }
       return r
     }
     var s = from
@@ -149,14 +157,20 @@ struct TeddyFinder: Sendable {
       let r1 = candidates(at: s)
       let r2 = candidates(at: s &+ 16)
       if vmaxvq_u8(r1 | r2) != 0 {
-        if let hit = verifyLanes(r1, hay, s, to) { return hit }
-        if let hit = verifyLanes(r2, hay, s &+ 16, to) { return hit }
+        if let hit = verifyLanes(r1, hay, s, to) {
+          return hit
+        }
+        if let hit = verifyLanes(r2, hay, s &+ 16, to) {
+          return hit
+        }
       }
       s &+= 32
     }
     while s <= vectorEnd {
       let r = candidates(at: s)
-      if vmaxvq_u8(r) != 0, let hit = verifyLanes(r, hay, s, to) { return hit }
+      if vmaxvq_u8(r) != 0, let hit = verifyLanes(r, hay, s, to) {
+        return hit
+      }
       s &+= 16
     }
     // The last few positions, one at a time.
@@ -164,9 +178,15 @@ struct TeddyFinder: Sendable {
     while s <= last {
       let w = s + offset
       var bits = low[0][Int(hay[w] & 0xF)] & high[0][Int(hay[w] >> 4)]
-      if width > 1 { bits &= low[1][Int(hay[w + 1] & 0xF)] & high[1][Int(hay[w + 1] >> 4)] }
-      if width > 2 { bits &= low[2][Int(hay[w + 2] & 0xF)] & high[2][Int(hay[w + 2] >> 4)] }
-      if bits != 0, verify(bits, hay, s, to) { return s }
+      if width > 1 {
+        bits &= low[1][Int(hay[w + 1] & 0xF)] & high[1][Int(hay[w + 1] >> 4)]
+      }
+      if width > 2 {
+        bits &= low[2][Int(hay[w + 2] & 0xF)] & high[2][Int(hay[w + 2] >> 4)]
+      }
+      if bits != 0, verify(bits, hay, s, to) {
+        return s
+      }
       s += 1
     }
     return nil
@@ -177,7 +197,9 @@ struct TeddyFinder: Sendable {
     var mask = SIMDBytes.nibbleMask(r .!= SIMD16(repeating: 0))
     while mask != 0 {
       let lane = SIMDBytes.firstLane(mask)
-      if verify(r[lane], hay, s &+ lane, to) { return s &+ lane }
+      if verify(r[lane], hay, s &+ lane, to) {
+        return s &+ lane
+      }
       mask = SIMDBytes.clearLane(mask, lane)
     }
     return nil
@@ -185,7 +207,7 @@ struct TeddyFinder: Sendable {
 
   /// Whether a needle in one of the `buckets` occurs at `start`.
   private func verify(_ buckets: UInt8, _ hay: Span<UInt8>, _ start: Int, _ to: Int) -> Bool {
-    let bytes = self.bytes.span
+    let bytes = bytes.span
     let masks = foldMasks.span
     var remaining = buckets
     while remaining != 0 {
@@ -197,8 +219,12 @@ struct TeddyFinder: Sendable {
         let length = starts[i + 1] - begin
         guard start + length <= to else { continue }
         var k = 0
-        while k < length && hay[start &+ k] | masks[begin &+ k] == bytes[begin &+ k] { k &+= 1 }
-        if k == length { return true }
+        while k < length && hay[start &+ k] | masks[begin &+ k] == bytes[begin &+ k] {
+          k &+= 1
+        }
+        if k == length {
+          return true
+        }
       }
     }
     return false

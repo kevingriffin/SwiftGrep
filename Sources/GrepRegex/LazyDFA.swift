@@ -24,9 +24,13 @@ struct DFAProgram: Sendable {
       boundary[Int(high) + 1] = true
     }
     for set in nfa.byteSets {
-      for r in set.ranges { mark(r.lowerBound, r.upperBound) }
+      for r in set.ranges {
+        mark(r.lowerBound, r.upperBound)
+      }
     }
-    for e in nfa.edges { mark(e.low, e.high) }
+    for e in nfa.edges {
+      mark(e.low, e.high)
+    }
     mark(10, 10)
     if usesWordLooks {
       mark(UInt8(ascii: "0"), UInt8(ascii: "9"))
@@ -34,7 +38,9 @@ struct DFAProgram: Sendable {
       mark(UInt8(ascii: "_"), UInt8(ascii: "_"))
       mark(UInt8(ascii: "a"), UInt8(ascii: "z"))
     }
-    if quitOnNonASCII { mark(0x80, 0xFF) }
+    if quitOnNonASCII {
+      mark(0x80, 0xFF)
+    }
 
     var classes = InlineArray<256, UInt8>(repeating: 0)
     var representatives: [UInt8] = [0]
@@ -47,7 +53,7 @@ struct DFAProgram: Sendable {
       classes[b] = UInt8(cls)
     }
     self.classes = classes
-    self.classCount = cls + 1
+    classCount = cls + 1
     self.stride = cls + 2
     self.representatives = representatives
   }
@@ -149,24 +155,36 @@ struct LazyDFA: ~Copyable {
         // Hot loop: follow cached transitions until something special happens.
         while i &+ 4 <= end {
           let n0 = t.load(fromByteOffset: Int(sid) &+ Int(classes[Int(hay[i])]), as: Int32.self)
-          if n0 < 0 { break }
+          if n0 < 0 {
+            break
+          }
           let n1 = t.load(fromByteOffset: Int(n0) &+ Int(classes[Int(hay[i &+ 1])]), as: Int32.self)
-          if n1 < 0 { sid = n0; i &+= 1; break }
+          if n1 < 0 {
+            sid = n0; i &+= 1; break
+          }
           let n2 = t.load(fromByteOffset: Int(n1) &+ Int(classes[Int(hay[i &+ 2])]), as: Int32.self)
-          if n2 < 0 { sid = n1; i &+= 2; break }
+          if n2 < 0 {
+            sid = n1; i &+= 2; break
+          }
           let n3 = t.load(fromByteOffset: Int(n2) &+ Int(classes[Int(hay[i &+ 3])]), as: Int32.self)
-          if n3 < 0 { sid = n2; i &+= 3; break }
+          if n3 < 0 {
+            sid = n2; i &+= 3; break
+          }
           sid = n3
           i &+= 4
         }
         while i < end {
           let n = t.load(fromByteOffset: Int(sid) &+ Int(classes[Int(hay[i])]), as: Int32.self)
-          if n < 0 { break }
+          if n < 0 {
+            break
+          }
           sid = n
           i &+= 1
         }
       }
-      if i >= end { break }
+      if i >= end {
+        break
+      }
       let cls = Int(classTable[Int(hay[i])] >> 2)
       var next = entry(sid, cls)
       if next == Self.unknown {
@@ -192,7 +210,9 @@ struct LazyDFA: ~Copyable {
 
   /// The row index of a state.
   @inline(__always)
-  private func index(of sid: Int32) -> Int { Int(sid) / (program.stride * MemoryLayout<Int32>.stride) }
+  private func index(of sid: Int32) -> Int {
+    Int(sid) / (program.stride * MemoryLayout<Int32>.stride)
+  }
 
   /// The cached transition from `sid` on class `cls`.
   @inline(__always)
@@ -207,7 +227,9 @@ struct LazyDFA: ~Copyable {
     var stateIndex = index(of: sid)
     if stateCount >= maxStates {
       clearsThisSearch += 1
-      if clearsThisSearch > 8 { return nil }
+      if clearsThisSearch > 8 {
+        return nil
+      }
       // Re-add the current state after clearing.
       let info = infos[stateIndex]
       let set = Array(setPool[info.setStart..<(info.setStart + info.setCount)])
@@ -224,7 +246,9 @@ struct LazyDFA: ~Copyable {
     } else {
       // Resolve look-ahead assertions at the current position.
       var lookNow = info.looks
-      if byte == nil || byte == 10 { lookNow.insert(.endLine) }
+      if byte == nil || byte == 10 {
+        lookNow.insert(.endLine)
+      }
       if program.usesWordLooks {
         let nextIsWord = byte.map(WordChars.isASCIIWord) ?? false
         for look in Look.allCases where look.isWordLook && nfa.looks.contains(look) {
@@ -245,10 +269,14 @@ struct LazyDFA: ~Copyable {
         scratchSet.removeAll(keepingCapacity: true)
         for s in working {
           let target = nfa.step(Int(s), byte)
-          if target >= 0 { scratchSet.append(target) }
+          if target >= 0 {
+            scratchSet.append(target)
+          }
         }
         var lookNext = LookSet()
-        if byte == 10 { lookNext.insert(.startLine) }
+        if byte == 10 {
+          lookNext.insert(.startLine)
+        }
         lookNext.bits &= nfa.looks.bits
         let fromWord = program.usesWordLooks && WordChars.isASCIIWord(byte)
         let nextSet = closure(seeds: scratchSet, looks: lookNext)
@@ -270,7 +298,9 @@ struct LazyDFA: ~Copyable {
     visited.clear()
     var result: [Int32] = []
     stack.removeAll(keepingCapacity: true)
-    for seed in seeds.reversed() { stack.append(seed) }
+    for seed in seeds.reversed() {
+      stack.append(seed)
+    }
     while let s = stack.popLast() {
       guard visited.insert(s) else { continue }
       let index = Int(s)
@@ -285,7 +315,9 @@ struct LazyDFA: ~Copyable {
       case .look:
         result.append(s)
         let look = Look(rawValue: UInt8(nfa.argA[index]))!
-        if looks.contains(look) { stack.append(nfa.argB[index]) }
+        if looks.contains(look) {
+          stack.append(nfa.argB[index])
+        }
       case .fail:
         break
       default:
@@ -298,7 +330,9 @@ struct LazyDFA: ~Copyable {
 
   private mutating func intern(_ set: [Int32], looks: LookSet, fromWord: Bool) -> Int32 {
     let key = StateKey(states: set, looks: looks.bits, fromWord: fromWord)
-    if let existing = map[key] { return existing }
+    if let existing = map[key] {
+      return existing
+    }
     let stride = program.stride
     let row = stateCount * stride
     let id = Int32(row * MemoryLayout<Int32>.stride)
@@ -307,7 +341,8 @@ struct LazyDFA: ~Copyable {
     let nfa = program.nfa
     infos.append(StateInfo(
       setStart: setPool.count, setCount: set.count, looks: looks, fromWord: fromWord,
-      hasLookStates: set.contains { nfa.kinds[Int($0)] == .look }))
+      hasLookStates: set.contains { nfa.kinds[Int($0)] == .look },
+    ))
     setPool.append(contentsOf: set)
     map[key] = id
     return id

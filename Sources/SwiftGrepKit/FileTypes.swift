@@ -85,7 +85,9 @@ enum FileTypes {
   /// All definitions after applying `--type-add name:glob[,glob]` entries.
   static func definitions(adding additions: [String]) throws(UsageError) -> [String: [String]] {
     var table: [String: [String]] = [:]
-    for (name, globs) in defaults { table[name] = globs }
+    for (name, globs) in defaults {
+      table[name] = globs
+    }
     for addition in additions {
       guard let colon = addition.firstIndex(of: ":") else {
         throw UsageError("invalid definition (format is type:glob, e.g., html:*.html): \(addition)")
@@ -115,7 +117,9 @@ struct TypeMatcher: Sendable {
       var result: [Glob] = []
       for name in names {
         if name == "all" {
-          for (_, g) in table { result.append(contentsOf: g.map { Glob(Array($0.utf8), anchored: false) }) }
+          for (_, g) in table {
+            result.append(contentsOf: g.map { Glob(Array($0.utf8), anchored: false) })
+          }
           continue
         }
         guard let definition = table[name] else { throw UsageError("unrecognized file type: \(name)") }
@@ -127,12 +131,18 @@ struct TypeMatcher: Sendable {
     negated = try globs(negate)
   }
 
-  var isEmpty: Bool { selected.isEmpty && negated.isEmpty }
+  var isEmpty: Bool {
+    selected.isEmpty && negated.isEmpty
+  }
 
   func match(name: Span<UInt8>) -> IgnoreMatch {
-    for glob in negated where glob.matches(name, nameStart: 0) { return .ignore }
+    for glob in negated where glob.matches(name, nameStart: 0) {
+      return .ignore
+    }
     guard !selected.isEmpty else { return .none }
-    for glob in selected where glob.matches(name, nameStart: 0) { return .whitelist }
+    for glob in selected where glob.matches(name, nameStart: 0) {
+      return .whitelist
+    }
     return .ignore
   }
 
@@ -145,5 +155,7 @@ struct TypeMatcher: Sendable {
 /// A command line usage error.
 public struct UsageError: Error, CustomStringConvertible {
   public let description: String
-  public init(_ message: String) { description = message }
+  public init(_ message: String) {
+    description = message
+  }
 }

@@ -31,11 +31,10 @@ public final class Matcher: Sendable {
   public let isCaseInsensitive: Bool
 
   public init(patterns: [String], options: MatcherOptions = MatcherOptions()) throws(RegexError) {
-    let insensitive: Bool
-    switch options.caseMode {
-    case .sensitive: insensitive = false
-    case .insensitive: insensitive = true
-    case .smart: insensitive = !patterns.contains(where: Self.hasUppercaseLiteral)
+    let insensitive: Bool = switch options.caseMode {
+    case .sensitive: false
+    case .insensitive: true
+    case .smart: !patterns.contains(where: Self.hasUppercaseLiteral)
     }
     isCaseInsensitive = insensitive
 
@@ -46,7 +45,7 @@ public final class Matcher: Sendable {
       if options.fixedStrings {
         nodes.append(Self.literalNode(pattern, caseInsensitive: insensitive))
       } else {
-        nodes.append(try Parser.parse(pattern, flags: flags))
+        try nodes.append(Parser.parse(pattern, flags: flags))
       }
     }
     var node = nodes.count == 1 ? nodes[0] : .alternate(nodes)
@@ -62,11 +61,13 @@ public final class Matcher: Sendable {
 
     let info = LiteralExtractor(foldASCII: insensitive).extract(node)
     if let exact = info.exact, info.precise,
-       let filter = Prefilter(literals: exact, fold: insensitive, maxCost: 0.05) {
+       let filter = Prefilter(literals: exact, fold: insensitive, maxCost: 0.05)
+    {
       prefilter = filter
       prefilterIsExact = true
     } else if let required = info.required,
-              let filter = Prefilter(literals: required, fold: insensitive, maxCost: 0.004) {
+              let filter = Prefilter(literals: required, fold: insensitive, maxCost: 0.004)
+    {
       prefilter = filter
       prefilterIsExact = false
     } else {
@@ -77,13 +78,12 @@ public final class Matcher: Sendable {
 
   /// A description of the search strategy, for `--debug` output.
   public var strategyDescription: String {
-    let filter: String
-    switch prefilter {
-    case .byte(let f): filter = "memchr(\(f.byte))"
-    case .pair(let f): filter = "packed pair (\(f.needle.count) bytes)"
-    case .teddy(let f): filter = "teddy (\(f.count) literals, window \(f.offset)..<\(f.offset + f.width))"
-    case .multi(let f): filter = "multi-literal (\(f.needles.count) literals)"
-    case nil: filter = "none"
+    let filter = switch prefilter {
+    case let .byte(f): "memchr(\(f.byte))"
+    case let .pair(f): "packed pair (\(f.needle.count) bytes)"
+    case let .teddy(f): "teddy (\(f.count) literals, window \(f.offset)..<\(f.offset + f.width))"
+    case let .multi(f): "multi-literal (\(f.needles.count) literals)"
+    case nil: "none"
     }
     return "prefilter: \(filter)\(prefilterIsExact ? " (exact)" : ""), nfa states: \(nfa.count), byte classes: \(dfaProgram.classCount)"
   }
@@ -114,11 +114,15 @@ public final class Matcher: Sendable {
         i += 2
         // Skip braced arguments like \p{Greek} or \x{41}.
         if i < chars.count, chars[i] == "{" {
-          while i < chars.count, chars[i] != "}" { i += 1 }
+          while i < chars.count, chars[i] != "}" {
+            i += 1
+          }
         }
         continue
       }
-      if c.properties.isUppercase { return true }
+      if c.properties.isUppercase {
+        return true
+      }
       i += 1
     }
     return false
@@ -163,9 +167,9 @@ public struct LineMatcher: ~Copyable {
       switch dfa.findEarliest(hay, from: pos, end: end) {
       case .noMatch:
         return nil
-      case .match(let at):
+      case let .match(at):
         return Self.line(around: at, in: hay, from: pos, end: end)
-      case .quit(let at):
+      case let .quit(at):
         let line = Self.line(around: at, in: hay, from: pos, end: end)
         if pike.isMatch(in: hay, lineStart: line.lowerBound, lineEnd: line.upperBound) {
           return line
@@ -187,9 +191,9 @@ public struct LineMatcher: ~Copyable {
   /// Whether the line `[lineStart, lineEnd)` contains a match.
   public mutating func isMatch(_ hay: Span<UInt8>, lineStart: Int, lineEnd: Int) -> Bool {
     switch dfa.findEarliest(hay, from: lineStart, end: lineEnd) {
-    case .match: return true
-    case .noMatch: return false
-    case .quit: return pike.isMatch(in: hay, lineStart: lineStart, lineEnd: lineEnd)
+    case .match: true
+    case .noMatch: false
+    case .quit: pike.isMatch(in: hay, lineStart: lineStart, lineEnd: lineEnd)
     }
   }
 
@@ -202,7 +206,7 @@ public struct LineMatcher: ~Copyable {
 
   /// Calls `body` with each successive non-overlapping match in the line.
   public mutating func forEachMatch(
-    in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, _ body: (Range<Int>) -> Void
+    in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, _ body: (Range<Int>) -> Void,
   ) {
     precondition(lineStart >= 0 && lineStart <= lineEnd && lineEnd <= hay.count)
     var at = lineStart
@@ -211,7 +215,9 @@ public struct LineMatcher: ~Copyable {
       guard let m = pike.find(in: hay, lineStart: lineStart, lineEnd: lineEnd, from: at) else { return }
       if m.isEmpty {
         // An empty match right after the previous match is not reported.
-        if m.lowerBound != lastEnd { body(m) }
+        if m.lowerBound != lastEnd {
+          body(m)
+        }
         at = m.upperBound + (m.upperBound < lineEnd ? UTF8Decoding.characterLength(hay, at: m.upperBound, end: lineEnd) : 1)
       } else {
         body(m)

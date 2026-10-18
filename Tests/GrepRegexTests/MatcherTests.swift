@@ -1,5 +1,5 @@
-import Testing
 @testable import GrepRegex
+import Testing
 
 /// Lines of `text` that match `pattern`, found through the DFA/prefilter path.
 func matchingLines(_ pattern: String, _ text: String, options: MatcherOptions = MatcherOptions()) throws -> [String] {
@@ -29,7 +29,7 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
   return result
 }
 
-@Suite struct LineMatching {
+struct LineMatching {
   let text = "alpha foo\nbeta\ngamma foo foo\ndelta\nFOO bar\n"
 
   @Test func literal() throws {
@@ -37,7 +37,7 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     #expect(try matchingLines("zzz", text) == [])
   }
 
-  @Test func caseInsensitive() throws {
+  @Test func `case insensitive`() throws {
     var options = MatcherOptions()
     options.caseMode = .insensitive
     #expect(try matchingLines("foo", text, options: options) == ["alpha foo", "gamma foo foo", "FOO bar"])
@@ -46,7 +46,7 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     #expect(try matchingLines("FOO", text, options: options) == ["FOO bar"])
   }
 
-  @Test func kelvinSignFoldsWithK() throws {
+  @Test func `kelvin sign folds with K`() throws {
     var options = MatcherOptions()
     options.caseMode = .insensitive
     #expect(try matchingLines("kelvin", "\u{212A}elvin\nother\n", options: options) == ["\u{212A}elvin"])
@@ -63,11 +63,11 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     #expect(try matchingLines("^", "\n") == [""])
   }
 
-  @Test func crlfIsNotStripped() throws {
+  @Test func `crlf is not stripped`() throws {
     #expect(try matchingLines("foo$", "foo\r\nfoo\n") == ["foo"])
   }
 
-  @Test func wordBoundaries() throws {
+  @Test func `word boundaries`() throws {
     let input = "foo-bar\n-foo\nfoobar\nfoo_x\nxfoo\n"
     #expect(try matchingLines(#"\bfoo\b"#, input) == ["foo-bar", "-foo"])
     var options = MatcherOptions()
@@ -78,19 +78,19 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     #expect(try matchingLines(#"\<foo"#, input) == ["foo-bar", "-foo", "foobar", "foo_x"])
   }
 
-  @Test func unicodeWordBoundary() throws {
+  @Test func `unicode word boundary`() throws {
     // é is a word character, so there is no boundary between it and "foo".
     #expect(try matchingLines(#"\bfoo"#, "éfoo\n foo\n") == [" foo"])
     #expect(try matchingLines(#"(?-u:\b)foo"#, "éfoo\n") == ["éfoo"])
   }
 
-  @Test func lineRegexp() throws {
+  @Test func `line regexp`() throws {
     var options = MatcherOptions()
     options.lineRegexp = true
     #expect(try matchingLines("foo|bar", "foo\nbar\nfoobar\n", options: options) == ["foo", "bar"])
   }
 
-  @Test func classesAndRepetition() throws {
+  @Test func `classes and repetition`() throws {
     let input = "abc123\nxyz\n42\nA-Z\n"
     #expect(try matchingLines(#"\d+"#, input) == ["abc123", "42"])
     #expect(try matchingLines(#"^\d{2}$"#, input) == ["42"])
@@ -101,34 +101,34 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     #expect(try matchingLines("colou?r", "color\ncolour\ncolr\n") == ["color", "colour"])
   }
 
-  @Test func unicodeClasses() throws {
+  @Test func `unicode classes`() throws {
     #expect(try matchingLines(#"^\w+$"#, "héllo\nhi there\n") == ["héllo"])
     #expect(try matchingLines(#"\p{Lu}"#, "abc\naBc\n") == ["aBc"])
     #expect(try matchingLines("ü", "über\nuber\n") == ["über"])
     #expect(try matchingLines("^.{3}$", "日本語\nab\n") == ["日本語"])
   }
 
-  @Test func dotNeverMatchesNewline() throws {
+  @Test func `dot never matches newline`() throws {
     #expect(try matchingLines("a.b", "a\nb\naxb\n") == ["axb"])
   }
 
-  @Test func alternationOfLiterals() throws {
+  @Test func `alternation of literals`() throws {
     #expect(try matchingLines("cat|dog|bird", "a cat\nfish\nhotdog\nbirds\n") == ["a cat", "hotdog", "birds"])
   }
 
-  @Test func fixedStrings() throws {
+  @Test func `fixed strings`() throws {
     var options = MatcherOptions()
     options.fixedStrings = true
     #expect(try matchingLines("a.b(", "a.b(c\naxb(\n", options: options) == ["a.b(c"])
   }
 
-  @Test func emptyPatternMatchesEveryLine() throws {
+  @Test func `empty pattern matches every line`() throws {
     #expect(try matchingLines("", "a\n\nb\n") == ["a", "", "b"])
   }
 
   /// A needle whose sampled bytes match at the very end of the haystack
   /// must not be compared past the end.
-  @Test func literalAtEndOfBuffer() throws {
+  @Test func `literal at end of buffer`() throws {
     for tail in ["ab", "abcde", "a", "abcdef"] {
       let text = String(repeating: "x", count: 100) + tail
       #expect(try matchingLines("abcdef", text) == (tail == "abcdef" ? [text] : []))
@@ -137,13 +137,13 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     }
   }
 
-  @Test func lastLineWithoutNewline() throws {
+  @Test func `last line without newline`() throws {
     #expect(try matchingLines("end", "start\nthe end") == ["the end"])
   }
 }
 
-@Suite struct Spans {
-  @Test func leftmostFirst() throws {
+struct Spans {
+  @Test func `leftmost first`() throws {
     #expect(try matches("a|ab", "ab") == ["a"])
     #expect(try matches("ab|a", "ab") == ["ab"])
     #expect(try matches("a+", "caaab aa") == ["aaa", "aa"])
@@ -152,18 +152,18 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
     #expect(try matches(#"\w+"#, "héllo wörld") == ["héllo", "wörld"])
   }
 
-  @Test func emptyMatches() throws {
+  @Test func `empty matches`() throws {
     #expect(try matches("x*", "axb") == ["", "x", ""])
   }
 }
 
-@Suite struct Errors {
+struct Errors {
   @Test(arguments: ["(", "a)", "a{2,1}", #"\1"#, "[a", "*a", #"\p{Nope}"#, "(?=a)", "a\nb"])
   func rejects(_ pattern: String) {
     #expect(throws: RegexError.self) { _ = try Matcher(patterns: [pattern]) }
   }
 
-  @Test func literalNewlineMessage() {
+  @Test func `literal newline message`() {
     do {
       _ = try Matcher(patterns: [#"foo\nbar"#])
       Issue.record("expected an error")
@@ -175,7 +175,7 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
 
 /// Cross-checks the DFA and prefilter path against the Pike VM on random
 /// patterns and haystacks.
-@Suite struct Consistency {
+struct Consistency {
   struct RandomGenerator: RandomNumberGenerator {
     var state: UInt64
     mutating func next() -> UInt64 {
@@ -203,12 +203,14 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
   func randomText(_ rng: inout RandomGenerator) -> String {
     let pieces = ["a", "b", "c", "ab", " ", "\n", "1", "é", "x", "_", "-", "bc"]
     var text = ""
-    for _ in 0..<Int.random(in: 0...40, using: &rng) { text += pieces.randomElement(using: &rng)! }
+    for _ in 0..<Int.random(in: 0...40, using: &rng) {
+      text += pieces.randomElement(using: &rng)!
+    }
     return text
   }
 
-  @Test func dfaAgreesWithPikeVM() throws {
-    var rng = RandomGenerator(state: 0x9E3779B97F4A7C15)
+  @Test func `dfa agrees with pike VM`() throws {
+    var rng = RandomGenerator(state: 0x9E37_79B9_7F4A_7C15)
     for _ in 0..<3000 {
       let pattern = randomPattern(&rng)
       let text = randomText(&rng)
@@ -248,19 +250,23 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
 
 /// Checks the Teddy multi-literal search against a naive scan, with haystack
 /// lengths around the 16- and 32-byte block boundaries.
-@Suite struct TeddyTests {
+struct TeddyTests {
   func naive(_ needles: [[UInt8]], _ fold: Bool, _ h: [UInt8], from: Int, to: Int) -> Int? {
-    func lower(_ b: UInt8) -> UInt8 { fold && b >= 0x41 && b <= 0x5A ? b | 0x20 : b }
+    func lower(_ b: UInt8) -> UInt8 {
+      fold && b >= 0x41 && b <= 0x5A ? b | 0x20 : b
+    }
     for s in from..<max(from, to) {
       for n in needles where s + n.count <= to {
-        if n.indices.allSatisfy({ lower(h[s + $0]) == lower(n[$0]) }) { return s }
+        if n.indices.allSatisfy({ lower(h[s + $0]) == lower(n[$0]) }) {
+          return s
+        }
       }
     }
     return nil
   }
 
-  @Test func agreesWithNaiveSearch() {
-    var rng = Consistency.RandomGenerator(state: 0x2545F4914F6CDD1D)
+  @Test func `agrees with naive search`() {
+    var rng = Consistency.RandomGenerator(state: 0x2545_F491_4F6C_DD1D)
     let alphabet = Array("abcAB_xyz".utf8)
     for _ in 0..<4000 {
       let fold = Bool.random(using: &rng)

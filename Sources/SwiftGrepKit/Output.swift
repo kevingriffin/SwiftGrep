@@ -11,8 +11,13 @@ struct OutputBuffer: ~Copyable {
     storage = UniqueArray(capacity: capacity)
   }
 
-  var count: Int { storage.count }
-  var isEmpty: Bool { storage.isEmpty }
+  var count: Int {
+    storage.count
+  }
+
+  var isEmpty: Bool {
+    storage.isEmpty
+  }
 
   @inline(__always)
   mutating func append(_ byte: UInt8) {
@@ -51,11 +56,15 @@ struct OutputBuffer: ~Copyable {
     }
   }
 
-  mutating func removeAll() { storage.removeLast(storage.count) }
+  mutating func removeAll() {
+    storage.removeLast(storage.count)
+  }
 
   /// Drops bytes past `length`, used to discard a partially formatted file.
   mutating func truncate(to length: Int) {
-    if length < storage.count { storage.removeLast(storage.count - length) }
+    if length < storage.count {
+      storage.removeLast(storage.count - length)
+    }
   }
 
   /// Copies out bytes from `start` (used to detach one file's output).
@@ -87,7 +96,9 @@ final class OutputSink: Sendable {
     self.collectForSorting = collectForSorting
   }
 
-  var isBroken: Bool { state.withLock { $0.broken } }
+  var isBroken: Bool {
+    state.withLock { $0.broken }
+  }
 
   /// Writes output for one or more complete files.
   func write(_ bytes: Span<UInt8>) {
@@ -125,9 +136,15 @@ final class OutputSink: Sendable {
       return items
     }
     var ordered = items.sorted { PathOrder.less($0.path, $1.path) }
-    if reverse { ordered.reverse() }
+    if reverse {
+      ordered.reverse()
+    }
     for item in ordered {
-      if fileSeparator == nil { write(item.data.span) } else { writeFile(item.data.span) }
+      if fileSeparator == nil {
+        write(item.data.span)
+      } else {
+        writeFile(item.data.span)
+      }
     }
   }
 }
@@ -142,8 +159,12 @@ enum PathOrder {
       let x = a[i]
       let y = b[i]
       if x != y {
-        if x == UInt8(ascii: "/") { return true }
-        if y == UInt8(ascii: "/") { return false }
+        if x == UInt8(ascii: "/") {
+          return true
+        }
+        if y == UInt8(ascii: "/") {
+          return false
+        }
         return x < y
       }
       i += 1

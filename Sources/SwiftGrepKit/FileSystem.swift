@@ -11,9 +11,9 @@ enum EntryKind: UInt8, Sendable {
 
   init(vnodeType: UInt32) {
     switch vnodeType {
-    case 1: self = .file       // VREG
-    case 2: self = .directory  // VDIR
-    case 5: self = .symlink    // VLNK
+    case 1: self = .file // VREG
+    case 2: self = .directory // VDIR
+    case 5: self = .symlink // VLNK
     default: self = .other
     }
   }
@@ -44,12 +44,19 @@ struct DirectoryEntry {
   static let largeSize: Int64 = 1 << 20
 
   /// Whether the file is (probably) large enough to search on its own.
-  var isLarge: Bool { size >= Self.largeSize || (size < 0 && largeHint) }
+  var isLarge: Bool {
+    size >= Self.largeSize || (size < 0 && largeHint)
+  }
 
   /// The name's bytes in `DirectoryListing.names`.
-  var nameRange: Range<Int> { nameOffset..<(nameOffset + nameLength) }
+  var nameRange: Range<Int> {
+    nameOffset..<(nameOffset + nameLength)
+  }
+
   /// The name with its NUL terminator, for system calls.
-  var cNameRange: Range<Int> { nameOffset..<(nameOffset + nameLength + 1) }
+  var cNameRange: Range<Int> {
+    nameOffset..<(nameOffset + nameLength + 1)
+  }
 }
 
 /// Reads whole directories with `getattrlistbulk`, which returns names, types
@@ -93,10 +100,14 @@ struct DirectoryListing: ~Copyable {
     request.fileattr = attrgroup_t(ATTR_FILE_DATALENGTH)
     while true {
       let count = try OS.getattrlistbulk(fd, &request, into: &bulk)
-      if count == 0 { return }
+      if count == 0 {
+        return
+      }
       do {
         var input = ParserSpan(bulk.span.bytes)
-        for _ in 0..<count { try Self.parseEntry(&input, names: &names, entries: &entries) }
+        for _ in 0..<count {
+          try Self.parseEntry(&input, names: &names, entries: &entries)
+        }
       } catch {
         throw .ioError
       }
@@ -106,7 +117,7 @@ struct DirectoryListing: ~Copyable {
   /// Parses one entry: its length (u32, including itself), the returned
   /// attribute groups (5 × u32), then the requested attributes in order.
   private static func parseEntry(
-    _ input: inout ParserSpan, names: inout UniqueArray<UInt8>, entries: inout [DirectoryEntry]
+    _ input: inout ParserSpan, names: inout UniqueArray<UInt8>, entries: inout [DirectoryEntry],
   ) throws(ParsingError) {
     let length = try Int(parsing: &input, storedAsLittleEndian: UInt32.self)
     var entry = try input.sliceSpan(byteCount: length - 4)
@@ -129,7 +140,7 @@ struct DirectoryListing: ~Copyable {
     }
     var kind = EntryKind.other
     if common & UInt32(ATTR_CMN_OBJTYPE) != 0 {
-      kind = EntryKind(vnodeType: try UInt32(parsingLittleEndian: &entry))
+      kind = try EntryKind(vnodeType: UInt32(parsingLittleEndian: &entry))
     }
     var size: Int64 = -1
     if fileAttributes & UInt32(ATTR_FILE_DATALENGTH) != 0 {
@@ -149,13 +160,19 @@ struct DirectoryListing: ~Copyable {
   static func isPlainName(_ name: Span<UInt8>) -> Bool {
     switch name.count {
     case 0: return false
-    case 1: if name[0] == UInt8(ascii: ".") { return false }
-    case 2: if name[0] == UInt8(ascii: ".") && name[1] == UInt8(ascii: ".") { return false }
+    case 1: if name[0] == UInt8(ascii: ".") {
+        return false
+      }
+    case 2: if name[0] == UInt8(ascii: ".") && name[1] == UInt8(ascii: ".") {
+        return false
+      }
     default: break
     }
     var i = 0
     while i < name.count {
-      if name[i] == UInt8(ascii: "/") || name[i] == 0 { return false }
+      if name[i] == UInt8(ascii: "/") || name[i] == 0 {
+        return false
+      }
       i += 1
     }
     return true
@@ -201,14 +218,20 @@ struct FileBuffer: ~Copyable {
     storage.removeLast(storage.count)
     var knownSize = sizeHint
     if knownSize >= 0 {
-      if knownSize > mapThreshold { return .tooLarge(knownSize) }
-      if Int(knownSize) + 1 > storage.capacity { storage.setCapacity(Int(knownSize) + 1) }
+      if knownSize > mapThreshold {
+        return .tooLarge(knownSize)
+      }
+      if Int(knownSize) + 1 > storage.capacity {
+        storage.setCapacity(Int(knownSize) + 1)
+      }
     }
     while true {
       if storage.freeCapacity == 0 {
         if knownSize < 0 && regularFile, let info = try? fd.stat() {
           knownSize = info.size
-          if knownSize > mapThreshold { return .tooLarge(knownSize) }
+          if knownSize > mapThreshold {
+            return .tooLarge(knownSize)
+          }
         }
         if knownSize >= Int64(storage.count) {
           storage.setCapacity(Int(knownSize) + 1)
@@ -225,7 +248,9 @@ struct FileBuffer: ~Copyable {
         return .failed(error)
       }
       // A short read of a regular file means EOF; no second call needed.
-      if n == 0 || (regularFile && n < requested) { return .complete }
+      if n == 0 || (regularFile && n < requested) {
+        return .complete
+      }
     }
   }
 
@@ -252,14 +277,18 @@ enum FileIO {
   static func readWholeFile(_ fd: FileDescriptor) throws(Errno) -> [UInt8] {
     var buffer = UniqueArray<UInt8>(capacity: 64 * 1024)
     while true {
-      if buffer.freeCapacity == 0 { buffer.setCapacity(buffer.capacity * 2) }
+      if buffer.freeCapacity == 0 {
+        buffer.setCapacity(buffer.capacity * 2)
+      }
       if try OS.read(fd, appendingTo: &buffer, limit: buffer.freeCapacity) == 0 {
         return Array(copying: buffer.span)
       }
     }
   }
 
-  static func environment(_ name: String) -> String? { OS.environment(name) }
+  static func environment(_ name: String) -> String? {
+    OS.environment(name)
+  }
 }
 
 extension Array where Element: BitwiseCopyable {
@@ -267,6 +296,8 @@ extension Array where Element: BitwiseCopyable {
   init(copying span: Span<Element>) {
     self.init()
     reserveCapacity(span.count)
-    for i in span.indices { append(span[i]) }
+    for i in span.indices {
+      append(span[i])
+    }
   }
 }

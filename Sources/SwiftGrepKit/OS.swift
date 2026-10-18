@@ -37,7 +37,7 @@ enum OS {
 
   static func open(
     _ path: String, _ mode: FileDescriptor.AccessMode = .readOnly,
-    _ options: FileDescriptor.OpenOptions = [], permissions: FilePermissions = .ownerReadWrite
+    _ options: FileDescriptor.OpenOptions = [], permissions: FilePermissions = .ownerReadWrite,
   ) throws(Errno) -> OpenFile {
     let fd = unsafe Darwin.open(path, mode.rawValue | options.rawValue, permissions.rawValue)
     guard fd >= 0 else { throw Errno(rawValue: errno) }
@@ -47,8 +47,8 @@ enum OS {
   /// `stat` (following symlinks) of a NUL-terminated path.
   static func stat(_ path: Span<UInt8>) throws(Errno) -> Stat {
     precondition(path.count > 0 && path[path.count - 1] == 0, "path must be NUL-terminated")
-    return try path.withUnsafeBufferPointer { (p) throws(Errno) -> Stat in
-      try unsafe p.withMemoryRebound(to: CChar.self) { (c) throws(Errno) -> Stat in
+    return try path.withUnsafeBufferPointer { p throws(Errno) -> Stat in
+      try unsafe p.withMemoryRebound(to: CChar.self) { c throws(Errno) -> Stat in
         try unsafe Stat(c.baseAddress!)
       }
     }
@@ -57,8 +57,8 @@ enum OS {
   /// `stat` (following symlinks) of a NUL-terminated name in `directory`.
   static func stat(_ name: Span<UInt8>, in directory: FileDescriptor) throws(Errno) -> Stat {
     precondition(name.count > 0 && name[name.count - 1] == 0, "name must be NUL-terminated")
-    return try name.withUnsafeBufferPointer { (p) throws(Errno) -> Stat in
-      try unsafe p.withMemoryRebound(to: CChar.self) { (c) throws(Errno) -> Stat in
+    return try name.withUnsafeBufferPointer { p throws(Errno) -> Stat in
+      try unsafe p.withMemoryRebound(to: CChar.self) { c throws(Errno) -> Stat in
         try unsafe Stat(c.baseAddress!, relativeTo: directory, flags: [])
       }
     }
@@ -91,12 +91,18 @@ enum OS {
         unsafe output.withUnsafeMutableBufferPointer { storage, initialized in
           let request = min(storage.count - initialized, limit)
           let n = unsafe Darwin.read(fd.rawValue, storage.baseAddress! + initialized, request)
-          if n > 0 { initialized += n }
+          if n > 0 {
+            initialized += n
+          }
           return n
         }
       }
-      if n >= 0 { return n }
-      if errno != EINTR { throw Errno(rawValue: errno) }
+      if n >= 0 {
+        return n
+      }
+      if errno != EINTR {
+        throw Errno(rawValue: errno)
+      }
     }
   }
 
@@ -126,8 +132,12 @@ enum OS {
       let count = storage.withUnsafeMutableBytes { bytes in
         unsafe Darwin.getattrlistbulk(fd.rawValue, &request, bytes.baseAddress, bytes.count, 0)
       }
-      if count >= 0 { return Int(count) }
-      if errno != EINTR { throw Errno(rawValue: errno) }
+      if count >= 0 {
+        return Int(count)
+      }
+      if errno != EINTR {
+        throw Errno(rawValue: errno)
+      }
     }
   }
 
@@ -156,7 +166,9 @@ enum OS {
       let name = unsafe withUnsafeBytes(of: entry.pointee.d_name) { bytes in
         unsafe String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
       }
-      if name != "." && name != ".." { names.append(name) }
+      if name != "." && name != ".." {
+        names.append(name)
+      }
     }
     return names
   }
@@ -182,7 +194,9 @@ enum OS {
 
 extension Errno {
   /// ripgrep's error style: "No such file or directory (os error 2)".
-  var message: String { "\(description) (os error \(rawValue))" }
+  var message: String {
+    "\(description) (os error \(rawValue))"
+  }
 }
 
 /// An open file descriptor that is closed when it goes out of scope, so

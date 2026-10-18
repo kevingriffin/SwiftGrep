@@ -1,7 +1,7 @@
 import BinaryParsing
 import Darwin
-import System
 import Synchronization
+import System
 
 /// A persistent cache of directory listings, validated with `lstat`.
 ///
@@ -101,7 +101,9 @@ final class ListingCache: Sendable {
     let name = directory + "/listings-" + Self.hash(absolutePath)
     path = name + ".v\(Self.version)"
     // Drop the cache written by an older format.
-    for old in 1..<Self.version { OS.unlink(name + ".v\(old)") }
+    for old in 1..<Self.version {
+      OS.unlink(name + ".v\(old)")
+    }
     let contents = Self.read(path) ?? []
     let count = Self.validRecordCount(contents.span.bytes)
     self.contents = count == nil ? [] : contents
@@ -153,7 +155,7 @@ final class ListingCache: Sendable {
 
   /// FNV-1a, enough to name a cache file after its root path.
   static func hash(_ bytes: [UInt8]) -> String {
-    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    var h: UInt64 = 0xCBF2_9CE4_8422_2325
     for b in bytes {
       h ^= UInt64(b)
       h = h &* 0x0000_0100_0000_01B3
@@ -184,7 +186,7 @@ final class ListingCache: Sendable {
 
   /// Fills `listing` from the cache if the directory is unchanged.
   func load(_ key: Key, stamp: Stamp, into listing: inout DirectoryListing) -> Bool {
-    let contents = self.contents
+    let contents = contents
     let file = ParserSpan(contents.span.bytes)
     do {
       var lo = 0
@@ -225,11 +227,15 @@ final class ListingCache: Sendable {
       bytes.append(entry.kind.rawValue | (entry.isLarge ? 0x80 : 0))
       bytes.append(UInt8(truncatingIfNeeded: entry.nameLength))
       bytes.append(UInt8(truncatingIfNeeded: entry.nameLength >> 8))
-      for i in entry.nameRange { bytes.append(names[i]) }
+      for i in entry.nameRange {
+        bytes.append(names[i])
+      }
     }
     let record = Record(stamp: stamp, entries: bytes, entryCount: listing.entries.count)
     fresh.withLock { records in
-      if records.count < Self.maxRecords { records[key] = record }
+      if records.count < Self.maxRecords {
+        records[key] = record
+      }
     }
   }
 
@@ -238,7 +244,7 @@ final class ListingCache: Sendable {
   func save() {
     let updates = fresh.withLock { $0 }
     guard !updates.isEmpty else { return }
-    let contents = self.contents
+    let contents = contents
     let file = ParserSpan(contents.span.bytes)
     var records: [(Key, Range<Int>?, Record?)] = []
     records.reserveCapacity(recordCount + updates.count)
@@ -249,7 +255,9 @@ final class ListingCache: Sendable {
         records.append((entry.key, entry.record.lowerBound..<entry.record.upperBound, nil))
       }
     }
-    for (key, record) in updates { records.append((key, nil, record)) }
+    for (key, record) in updates {
+      records.append((key, nil, record))
+    }
     records.sort { $0.0 < $1.0 }
 
     var index: [UInt8] = []
@@ -292,7 +300,9 @@ final class ListingCache: Sendable {
       try OS.writeAll(file.descriptor, index.span)
       try OS.writeAll(file.descriptor, data.span)
       file.close()
-      if OS.rename(temporary, path) { return }
+      if OS.rename(temporary, path) {
+        return
+      }
     } catch {}
     OS.unlink(temporary)
   }
@@ -307,7 +317,9 @@ final class ListingCache: Sendable {
   /// Removes every cache file.
   static func clearAll() -> Int32 {
     guard let directory = cacheDirectory(), let names = OS.directoryNames(directory) else { return 0 }
-    for name in names where name.hasPrefix("listings-") { OS.unlink(directory + "/" + name) }
+    for name in names where name.hasPrefix("listings-") {
+      OS.unlink(directory + "/" + name)
+    }
     return 0
   }
 }

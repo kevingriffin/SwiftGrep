@@ -1,9 +1,9 @@
 import Darwin
+@testable import SwiftGrepKit
 import System
 import Testing
-@testable import SwiftGrepKit
 
-@Suite struct Globs {
+struct Globs {
   func matches(_ pattern: String, _ path: String, anchored: Bool? = nil) -> Bool {
     let bytes = Array(pattern.utf8)
     let glob = Glob(bytes, anchored: anchored ?? bytes.contains(UInt8(ascii: "/")))
@@ -27,7 +27,7 @@ import Testing
     #expect(!matches("pkgs/*/tmp", "pkgs/qt/x/tmp"))
   }
 
-  @Test func doubleStar() {
+  @Test func `double star`() {
     #expect(matches("a/**/b", "a/b"))
     #expect(matches("a/**/b", "a/x/y/b"))
     #expect(!matches("a/**/b", "a/x/y/c"))
@@ -44,13 +44,13 @@ import Testing
     #expect(matches("f?o", "fäo"))
   }
 
-  @Test func caseInsensitive() {
+  @Test func `case insensitive`() {
     let glob = Glob(Array("*.MD".utf8), anchored: false, caseInsensitive: true)
     #expect(glob.matches(Array("README.md".utf8)))
   }
 }
 
-@Suite struct GitignoreRules {
+struct GitignoreRules {
   func match(_ rules: String, _ path: String, directory: Bool = false) -> IgnoreMatch {
     let parsed = IgnoreRules(gitignore: Array(rules.utf8))
     let bytes = Array(path.utf8)
@@ -58,25 +58,25 @@ import Testing
     return parsed.match(bytes.span, nameStart: nameStart, isDirectory: directory)
   }
 
-  @Test func lastMatchWins() {
+  @Test func `last match wins`() {
     let rules = "*.log\n!keep.log\n"
     #expect(match(rules, "a/debug.log") == .ignore)
     #expect(match(rules, "a/keep.log") == .whitelist)
     #expect(match(rules, "a/readme") == .none)
   }
 
-  @Test func directoryOnly() {
+  @Test func `directory only`() {
     #expect(match("build/\n", "x/build", directory: true) == .ignore)
     #expect(match("build/\n", "x/build", directory: false) == .none)
   }
 
-  @Test func commentsAndEscapes() {
+  @Test func `comments and escapes`() {
     #expect(match("# comment\n\\#notes\n", "#notes") == .ignore)
     #expect(match("trailing   \n", "trailing") == .ignore)
     #expect(match("\\!bang\n", "!bang") == .ignore)
   }
 
-  @Test func leadingSlashAnchors() {
+  @Test func `leading slash anchors`() {
     #expect(match("/AGENTS.md\n", "AGENTS.md") == .ignore)
     #expect(match("/AGENTS.md\n", "sub/AGENTS.md") == .none)
     #expect(match("**/node_modules\n", "a/b/node_modules", directory: true) == .ignore)
@@ -84,10 +84,10 @@ import Testing
 
   /// Rules are indexed by name, extension and path, but file order still
   /// decides across the groups.
-  @Test func indexedRulesKeepFileOrder() {
+  @Test func `indexed rules keep file order`() {
     let rules = "*.o\n!keep.o\n*.so.dbg\n!/top/x.so.dbg\nvmlinux\n!*\n*.o.*\nTAGS\n/top/TAGS\n*~\n"
-    #expect(match(rules, "a/main.o") == .whitelist)        // `!*` comes after `*.o`
-    #expect(match(rules, "a/main.o.cmd") == .ignore)      // `*.o.*`
+    #expect(match(rules, "a/main.o") == .whitelist) // `!*` comes after `*.o`
+    #expect(match(rules, "a/main.o.cmd") == .ignore) // `*.o.*`
     #expect(match(rules, "TAGS") == .ignore)
     #expect(match(rules, "top/TAGS") == .ignore)
     #expect(match(rules, "a/file.c~") == .ignore)
@@ -106,16 +106,16 @@ import Testing
   }
 }
 
-@Suite struct Arguments {
+struct Arguments {
   func parse(_ args: [String]) throws -> Configuration {
-    guard case .search(let config) = try ArgumentParser.parse(args) else {
+    guard case let .search(config) = try ArgumentParser.parse(args) else {
       Issue.record("expected a search")
       return Configuration()
     }
     return config
   }
 
-  @Test func clusteredShortFlags() throws {
+  @Test func `clustered short flags`() throws {
     let c = try parse(["-inC2", "foo", "dir"])
     #expect(c.matcher.caseMode == .insensitive)
     #expect(c.lineNumbers == true)
@@ -124,7 +124,7 @@ import Testing
     #expect(c.paths == ["dir"])
   }
 
-  @Test func longFlagsWithValues() throws {
+  @Test func `long flags with values`() throws {
     let c = try parse(["--max-count=3", "--glob", "*.nix", "-e", "a", "-e", "b", "--", "-path"])
     #expect(c.maxCount == 3)
     #expect(c.globs.map(\.pattern) == ["*.nix"])
@@ -144,12 +144,14 @@ import Testing
   }
 }
 
-@Suite struct Binary {
+struct Binary {
   /// The same 64 KiB buffer refill logic, step by step over a byte array.
-  @Test func searchableLengthMatchesRipgrepBuffering() {
+  @Test func `searchable length matches ripgrep buffering`() {
     let line = Array(repeating: UInt8(ascii: "y"), count: 79) + [10]
     var data: [UInt8] = Array("foo\n".utf8)
-    for _ in 0..<1000 { data += line }
+    for _ in 0..<1000 {
+      data += line
+    }
     let nul = data.count
     data += [0, 10] + Array("foo\n".utf8)
     let limit = BinaryDetection.searchableLength(data.span, nulOffset: nul)
@@ -159,17 +161,17 @@ import Testing
     #expect(limit <= BinaryDetection.bufferCapacity)
   }
 
-  @Test func nulInFirstChunkSkipsEverything() {
+  @Test func `nul in first chunk skips everything`() {
     let data: [UInt8] = Array("foo\0bar\n".utf8)
     let limit = BinaryDetection.searchableLength(data.span, nulOffset: 3)
     #expect(limit == 0)
   }
 }
 
-@Suite struct Hardening {
+struct Hardening {
   /// Backtracking glob matchers take exponential time on patterns like
   /// this; the position-set matcher must finish instantly.
-  @Test func globsCannotBlowUp() {
+  @Test func `globs cannot blow up`() {
     let pattern = Array(String(repeating: "*a", count: 20).utf8) + Array("*b".utf8)
     let glob = Glob(pattern, anchored: false)
     let name = Array(String(repeating: "a", count: 200).utf8)
@@ -183,8 +185,10 @@ import Testing
     #expect(!long.matches(Array(String(repeating: "x", count: 1999).utf8)))
   }
 
-  @Test func directoryNamesMustBePlain() {
-    func plain(_ name: String) -> Bool { DirectoryListing.isPlainName(Array(name.utf8).span) }
+  @Test func `directory names must be plain`() {
+    func plain(_ name: String) -> Bool {
+      DirectoryListing.isPlainName(Array(name.utf8).span)
+    }
     for bad in ["", ".", "..", "a/b", "../x", "a\u{0}b"] {
       #expect(!plain(bad), "\(bad)")
     }
@@ -194,8 +198,8 @@ import Testing
   }
 }
 
-@Suite struct Ordering {
-  @Test func componentWise() {
+struct Ordering {
+  @Test func `component wise`() {
     #expect(PathOrder.less(Array("a/x".utf8), Array("a-b/x".utf8)))
     #expect(PathOrder.less(Array("a/b".utf8), Array("a/c".utf8)))
     #expect(!PathOrder.less(Array("b".utf8), Array("a/z".utf8)))
@@ -246,13 +250,13 @@ import Testing
     return (status, text.split(separator: "\n").map(String.init).sorted())
   }
 
-  @Test func respectsGitignoreHiddenAndBinary() async {
+  @Test func `respects gitignore hidden and binary`() async {
     let result = await run(["foo", root + "/repo"])
     #expect(result.status == 0)
     #expect(result.lines == ["a.txt:alpha foo", "a.txt:gamma foo", "sub/b.nix:{ foo = 1; }"])
   }
 
-  @Test func unrestrictedSearchesEverything() async {
+  @Test func `unrestricted searches everything`() async {
     let result = await run(["-uuu", "-l", "foo", root + "/repo"])
     #expect(result.lines.contains("ignored.txt"))
     #expect(result.lines.contains("build/out.txt"))
@@ -260,45 +264,45 @@ import Testing
     #expect(result.lines.contains("bin.dat"))
   }
 
-  @Test func countsAndTypes() async {
+  @Test func `counts and types`() async {
     #expect(await run(["-c", "foo", root + "/repo"]).lines == ["a.txt:2", "sub/b.nix:1"])
     #expect(await run(["-c", "-t", "nix", "foo", root + "/repo"]).lines == ["sub/b.nix:1"])
     #expect(await run(["-c", "-g", "!*.nix", "foo", root + "/repo"]).lines == ["a.txt:2"])
   }
 
-  @Test func explicitBinaryFile() async {
+  @Test func `explicit binary file`() async {
     let result = await run(["foo", root + "/repo/bin.dat"])
     #expect(result.lines == ["binary file matches (found \"\\0\" byte around offset 3)"])
   }
 
-  @Test func noMatchExitStatus() async {
+  @Test func `no match exit status`() async {
     #expect(await run(["zzz", root + "/repo"]).status == 1)
     #expect(await run(["foo", root + "/missing"]).status == 2)
   }
 
-  @Test func skipsByteOrderMark() async throws {
+  @Test func `skips byte order mark`() async throws {
     try write("bom/a.txt", "\u{FEFF}foo first\nfoo\n")
     let path = root + "/bom/a.txt"
     #expect(await run(["-n", "--column", "^foo", path]).lines == ["1:1:foo first", "2:1:foo"])
     #expect(await run(["-E", "none", "-c", "^foo", path]).lines == ["1"])
   }
 
-  @Test func largeFilesAreSearchedAsSeparateJobs() async throws {
+  @Test func `large files are searched as separate jobs`() async throws {
     let line = String(repeating: "x", count: 99) + "\n"
-    try write("big/large.txt", String(repeating: line, count: 11_000) + "needle\n" + line)
+    try write("big/large.txt", String(repeating: line, count: 11000) + "needle\n" + line)
     try write("big/small.txt", "needle\n")
     let result = await run(["-c", "needle", root + "/big"])
     #expect(result.lines == [root + "/big/large.txt:1", root + "/big/small.txt:1"])
     #expect(await run(["-n", "needle", root + "/big/large.txt"]).lines == ["11001:needle"])
   }
 
-  @Test func sortedOutput() async {
+  @Test func `sorted output`() async {
     let result = await run(["--sort", "path", "-n", "foo", root + "/repo"])
     #expect(result.lines.count == 3)
   }
 }
 
-@Suite struct ListingCacheTests {
+struct ListingCacheTests {
   func makeTemporaryDirectory() -> String {
     var template = Array("/tmp/sg-cache-XXXXXX".utf8CString)
     let made = template.withUnsafeMutableBufferPointer { mkdtemp($0.baseAddress!) }
@@ -325,7 +329,7 @@ import Testing
     return (names, cached)
   }
 
-  @Test func reusesUnchangedListingsAndNoticesChanges() throws {
+  @Test func `reuses unchanged listings and notices changes`() throws {
     let cacheDirectory = makeTemporaryDirectory()
     let tree = makeTemporaryDirectory()
     touch(tree + "/a")
@@ -352,7 +356,7 @@ import Testing
     #expect(list(tree, cache: cache) == (["b", "c"], false))
   }
 
-  @Test func remembersLargeFiles() throws {
+  @Test func `remembers large files`() throws {
     let cacheDirectory = makeTemporaryDirectory()
     let tree = makeTemporaryDirectory()
     touch(tree + "/small")
@@ -374,7 +378,7 @@ import Testing
     #expect(large.allSatisfy { $0.2 == -1 }) // cached sizes are never trusted
   }
 
-  @Test func damagedCacheFilesAreMisses() throws {
+  @Test func `damaged cache files are misses`() throws {
     let cacheDirectory = makeTemporaryDirectory()
     let tree = makeTemporaryDirectory()
     touch(tree + "/a")
@@ -401,7 +405,7 @@ import Testing
     }
   }
 
-  @Test func cacheDirectoryMustBePrivate() throws {
+  @Test func `cache directory must be private`() {
     let home = makeTemporaryDirectory()
     mkdir(home + "/Library", 0o700)
     mkdir(home + "/Library/Caches", 0o700)
@@ -418,7 +422,7 @@ import Testing
     #expect(ListingCache.cacheDirectory(environment: { $0 == "XDG_CACHE_HOME" ? xdg : nil }) == nil)
   }
 
-  @Test func recentlyChangedDirectoriesAreNotRecorded() throws {
+  @Test func `recently changed directories are not recorded`() throws {
     let cacheDirectory = makeTemporaryDirectory()
     let tree = makeTemporaryDirectory()
     touch(tree + "/x")

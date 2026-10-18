@@ -16,11 +16,15 @@ enum SIMDBytes {
 
   /// Index of the first set lane in a nibble mask.
   @inline(__always)
-  static func firstLane(_ mask: UInt64) -> Int { mask.trailingZeroBitCount &>> 2 }
+  static func firstLane(_ mask: UInt64) -> Int {
+    mask.trailingZeroBitCount &>> 2
+  }
 
   /// Index of the last set lane in a nibble mask.
   @inline(__always)
-  static func lastLane(_ mask: UInt64) -> Int { 15 &- (mask.leadingZeroBitCount &>> 2) }
+  static func lastLane(_ mask: UInt64) -> Int {
+    15 &- (mask.leadingZeroBitCount &>> 2)
+  }
 
   @inline(__always)
   static func clearLane(_ mask: UInt64, _ lane: Int) -> UInt64 {
@@ -29,11 +33,11 @@ enum SIMDBytes {
 }
 
 /// Byte searches over a span. Every access is checked against the span.
-extension Span where Element == UInt8 {
+public extension Span where Element == UInt8 {
   /// The first index of `byte` in `range`.
-  public func firstIndex(of byte: UInt8, in range: Range<Int>) -> Int? {
+  func firstIndex(of byte: UInt8, in range: Range<Int>) -> Int? {
     precondition(range.lowerBound >= 0 && range.upperBound <= count)
-    let bytes = self.bytes
+    let bytes = bytes
     let needle = SIMD16<UInt8>(repeating: byte)
     var i = range.lowerBound
     let end = range.upperBound
@@ -45,45 +49,55 @@ extension Span where Element == UInt8 {
       if any((m0 .| m1) .| (m2 .| m3)) {
         for (k, m) in [m0, m1, m2, m3].enumerated() {
           let mask = SIMDBytes.nibbleMask(m)
-          if mask != 0 { return i &+ k &* 16 &+ SIMDBytes.firstLane(mask) }
+          if mask != 0 {
+            return i &+ k &* 16 &+ SIMDBytes.firstLane(mask)
+          }
         }
       }
       i &+= 64
     }
     while end &- i >= 16 {
       let mask = SIMDBytes.nibbleMask(SIMDBytes.load(bytes, i) .== needle)
-      if mask != 0 { return i &+ SIMDBytes.firstLane(mask) }
+      if mask != 0 {
+        return i &+ SIMDBytes.firstLane(mask)
+      }
       i &+= 16
     }
     while i < end {
-      if self[i] == byte { return i }
+      if self[i] == byte {
+        return i
+      }
       i &+= 1
     }
     return nil
   }
 
   /// The last index of `byte` in `range`.
-  public func lastIndex(of byte: UInt8, in range: Range<Int>) -> Int? {
+  func lastIndex(of byte: UInt8, in range: Range<Int>) -> Int? {
     precondition(range.lowerBound >= 0 && range.upperBound <= count)
-    let bytes = self.bytes
+    let bytes = bytes
     let needle = SIMD16<UInt8>(repeating: byte)
     var end = range.upperBound
     while end - 16 >= range.lowerBound {
       let mask = SIMDBytes.nibbleMask(SIMDBytes.load(bytes, end &- 16) .== needle)
-      if mask != 0 { return end &- 16 &+ SIMDBytes.lastLane(mask) }
+      if mask != 0 {
+        return end &- 16 &+ SIMDBytes.lastLane(mask)
+      }
       end &-= 16
     }
     while end > range.lowerBound {
       end &-= 1
-      if self[end] == byte { return end }
+      if self[end] == byte {
+        return end
+      }
     }
     return nil
   }
 
   /// The number of occurrences of `byte` in `range`.
-  public func count(of byte: UInt8, in range: Range<Int>) -> Int {
+  func count(of byte: UInt8, in range: Range<Int>) -> Int {
     precondition(range.lowerBound >= 0 && range.upperBound <= count)
-    let bytes = self.bytes
+    let bytes = bytes
     var i = range.lowerBound
     let end = range.upperBound
     var total = 0
@@ -109,7 +123,9 @@ extension Span where Element == UInt8 {
       total &+= Int(SIMD16<UInt16>(truncatingIfNeeded: lanes).wrappedSum())
     }
     while i < end {
-      if self[i] == byte { total &+= 1 }
+      if self[i] == byte {
+        total &+= 1
+      }
       i &+= 1
     }
     return total
@@ -135,11 +151,15 @@ struct ByteFinder: Sendable {
     var i = from
     while i + 16 <= to {
       let mask = SIMDBytes.nibbleMask((SIMDBytes.load(bytes, i) | lowerBit) .== needle)
-      if mask != 0 { return i &+ SIMDBytes.firstLane(mask) }
+      if mask != 0 {
+        return i &+ SIMDBytes.firstLane(mask)
+      }
       i &+= 16
     }
     while i < to {
-      if hay[i] | 0x20 == byte { return i }
+      if hay[i] | 0x20 == byte {
+        return i
+      }
       i &+= 1
     }
     return nil
@@ -172,24 +192,30 @@ struct PairFinder: Sendable {
     func frequency(_ k: Int) -> Float {
       let b = needle[k]
       var f = ByteFrequencies.table[Int(b)]
-      if foldMask[k] != 0 { f += ByteFrequencies.table[Int(b & ~0x20)] }
+      if foldMask[k] != 0 {
+        f += ByteFrequencies.table[Int(b & ~0x20)]
+      }
       return f
     }
     let order = needle.indices.sorted { frequency($0) < frequency($1) || (frequency($0) == frequency($1) && $0 < $1) }
     var first = order[0]
     var second = order.first { needle[$0] != needle[first] } ?? order[1]
-    if first > second { swap(&first, &second) }
+    if first > second {
+      swap(&first, &second)
+    }
     index1 = first
     index2 = second
   }
 
   @inline(__always)
   private func verify(_ hay: Span<UInt8>, _ start: Int) -> Bool {
-    let needle = self.needle.span
+    let needle = needle.span
     let mask = foldMask.span
     var k = 0
     while k < needle.count {
-      if hay[start &+ k] | mask[k] != needle[k] { return false }
+      if hay[start &+ k] | mask[k] != needle[k] {
+        return false
+      }
       k &+= 1
     }
     return true
@@ -215,13 +241,17 @@ struct PairFinder: Sendable {
         var mask = SIMDBytes.nibbleMask(m1)
         while mask != 0 {
           let lane = SIMDBytes.firstLane(mask)
-          if i &+ lane <= last, verify(hay, i &+ lane) { return i &+ lane }
+          if i &+ lane <= last, verify(hay, i &+ lane) {
+            return i &+ lane
+          }
           mask = SIMDBytes.clearLane(mask, lane)
         }
         mask = SIMDBytes.nibbleMask(m2)
         while mask != 0 {
           let lane = SIMDBytes.firstLane(mask)
-          if i &+ 16 &+ lane <= last, verify(hay, i &+ 16 &+ lane) { return i &+ 16 &+ lane }
+          if i &+ 16 &+ lane <= last, verify(hay, i &+ 16 &+ lane) {
+            return i &+ 16 &+ lane
+          }
           mask = SIMDBytes.clearLane(mask, lane)
         }
       }
@@ -232,7 +262,9 @@ struct PairFinder: Sendable {
     let n1 = needle[i1]
     let n2 = needle[i2]
     while i <= last {
-      if hay[i &+ i1] | f1 == n1 && hay[i &+ i2] | f2 == n2 && verify(hay, i) { return i }
+      if hay[i &+ i1] | f1 == n1 && hay[i &+ i2] | f2 == n2 && verify(hay, i) {
+        return i
+      }
       i &+= 1
     }
     return nil
@@ -262,7 +294,7 @@ struct MultiFinder: Sendable {
       }
     }
     self.needles = needles
-    self.foldMasks = masks
+    foldMasks = masks
     let minLength = needles.map(\.count).min() ?? 1
     // Pick the offset whose distinct bytes are rarest in total.
     var bestOffset = 0
@@ -271,7 +303,9 @@ struct MultiFinder: Sendable {
       var bytes = Set<UInt8>()
       for (i, n) in needles.enumerated() {
         bytes.insert(n[k])
-        if masks[i][k] != 0 { bytes.insert(n[k] & ~0x20) }
+        if masks[i][k] != 0 {
+          bytes.insert(n[k] & ~0x20)
+        }
       }
       let cost = bytes.reduce(Float(0)) { $0 + ByteFrequencies.table[Int($1)] }
       if cost < bestCost {
@@ -303,8 +337,12 @@ struct MultiFinder: Sendable {
       guard start + n.count <= to else { continue }
       let mask = foldMasks[index]
       var k = 0
-      while k < n.count && hay[start &+ k] | mask[k] == n[k] { k &+= 1 }
-      if k == n.count { return start }
+      while k < n.count && hay[start &+ k] | mask[k] == n[k] {
+        k &+= 1
+      }
+      if k == n.count {
+        return start
+      }
     }
     return nil
   }
@@ -312,7 +350,9 @@ struct MultiFinder: Sendable {
   func find(_ hay: Span<UInt8>, from: Int, to: Int) -> Int? {
     var i = from + offset
     while i < to {
-      if member[Int(hay[i])], let start = verify(hay, at: i, from: from, to: to) { return start }
+      if member[Int(hay[i])], let start = verify(hay, at: i, from: from, to: to) {
+        return start
+      }
       i &+= 1
     }
     return nil
@@ -346,10 +386,10 @@ enum Prefilter: Sendable {
   func find(_ hay: Span<UInt8>, from: Int, to: Int) -> Int? {
     precondition(from >= 0 && to <= hay.count)
     return switch self {
-    case .byte(let f): f.find(hay, from: from, to: to)
-    case .pair(let f): f.find(hay, from: from, to: to)
-    case .teddy(let f): f.find(hay, from: from, to: to)
-    case .multi(let f): f.find(hay, from: from, to: to)
+    case let .byte(f): f.find(hay, from: from, to: to)
+    case let .pair(f): f.find(hay, from: from, to: to)
+    case let .teddy(f): f.find(hay, from: from, to: to)
+    case let .multi(f): f.find(hay, from: from, to: to)
     }
   }
 }

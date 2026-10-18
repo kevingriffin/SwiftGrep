@@ -52,7 +52,11 @@ final class IgnoreRules: Sendable {
       let i = Int32(index)
       switch glob.strategy {
       case .exact where !glob.caseInsensitive:
-        if glob.anchored { paths[glob.bytes, default: []].append(i) } else { names[glob.bytes, default: []].append(i) }
+        if glob.anchored {
+          paths[glob.bytes, default: []].append(i)
+        } else {
+          names[glob.bytes, default: []].append(i)
+        }
       case .suffix where !glob.caseInsensitive && !glob.anchored && glob.bytes.contains(UInt8(ascii: ".")):
         let dot = glob.bytes.lastIndex(of: UInt8(ascii: "."))!
         extensions[Array(glob.bytes[dot...]), default: []].append(i)
@@ -82,22 +86,30 @@ final class IgnoreRules: Sendable {
     var line: [UInt8] = []
     for byte in contents {
       if byte == 10 {
-        if let rule = Self.parse(line, caseInsensitive: caseInsensitive) { rules.append(rule) }
+        if let rule = Self.parse(line, caseInsensitive: caseInsensitive) {
+          rules.append(rule)
+        }
         line.removeAll(keepingCapacity: true)
       } else {
         line.append(byte)
       }
     }
-    if let rule = Self.parse(line, caseInsensitive: caseInsensitive) { rules.append(rule) }
+    if let rule = Self.parse(line, caseInsensitive: caseInsensitive) {
+      rules.append(rule)
+    }
     self.init(rules: rules)
   }
 
   static func parse(_ raw: [UInt8], caseInsensitive: Bool) -> IgnoreRule? {
     var line = raw
-    if line.last == 13 { line.removeLast() } // CRLF files
+    if line.last == 13 {
+      line.removeLast()
+    } // CRLF files
     // Trailing spaces are ignored unless escaped.
     while let last = line.last, last == UInt8(ascii: " ") {
-      if line.count >= 2 && line[line.count - 2] == UInt8(ascii: "\\") { break }
+      if line.count >= 2 && line[line.count - 2] == UInt8(ascii: "\\") {
+        break
+      }
       line.removeLast()
     }
     guard let first = line.first, first != UInt8(ascii: "#") else { return nil }
@@ -106,7 +118,8 @@ final class IgnoreRules: Sendable {
       negated = true
       line.removeFirst()
     } else if first == UInt8(ascii: "\\"), line.count > 1,
-              line[1] == UInt8(ascii: "!") || line[1] == UInt8(ascii: "#") {
+              line[1] == UInt8(ascii: "!") || line[1] == UInt8(ascii: "#")
+    {
       line.removeFirst()
     }
     var directoryOnly = false
@@ -117,7 +130,9 @@ final class IgnoreRules: Sendable {
     guard !line.isEmpty else { return nil }
     // A slash anywhere but the end anchors the pattern to the file's directory.
     var anchored = line.contains(UInt8(ascii: "/"))
-    if line.first == UInt8(ascii: "/") { line.removeFirst() }
+    if line.first == UInt8(ascii: "/") {
+      line.removeFirst()
+    }
     // `**/name` matches at any depth, just like an unanchored name.
     if line.starts(with: Array("**/".utf8)), !line.dropFirst(3).contains(UInt8(ascii: "/")) {
       line.removeFirst(3)
@@ -129,7 +144,7 @@ final class IgnoreRules: Sendable {
 
   /// The last matching rule decides.
   func match(_ path: Span<UInt8>, nameStart: Int, isDirectory: Bool) -> IgnoreMatch {
-    let candidateArray = self.candidates
+    let candidateArray = candidates
     let candidates = candidateArray.span
     let name = path.extracting(nameStart...)
     var best = -1
@@ -151,15 +166,19 @@ final class IgnoreRules: Sendable {
   /// if it is above `best`; otherwise `best`.
   private func lastMatch(
     among candidates: Span<Int32>, _ range: Range<Int>, above best: Int,
-    _ path: Span<UInt8>, _ nameStart: Int, _ isDirectory: Bool
+    _ path: Span<UInt8>, _ nameStart: Int, _ isDirectory: Bool,
   ) -> Int {
     var i = range.upperBound - 1
     while i >= range.lowerBound {
       let index = Int(candidates[i])
       guard index > best else { break }
       i -= 1
-      if rules[index].directoryOnly && !isDirectory { continue }
-      if rules[index].glob.matches(path, nameStart: nameStart) { return index }
+      if rules[index].directoryOnly && !isDirectory {
+        continue
+      }
+      if rules[index].glob.matches(path, nameStart: nameStart) {
+        return index
+      }
     }
     return best
   }
@@ -179,11 +198,15 @@ struct LiteralTable: Sendable {
   private let entries: [Entry]
   private let keys: [UInt8]
 
-  var isEmpty: Bool { entries.isEmpty }
+  var isEmpty: Bool {
+    entries.isEmpty
+  }
 
   init(_ pairs: [([UInt8], Range<Int>)]) {
     var capacity = 1
-    while capacity < pairs.count * 2 { capacity <<= 1 }
+    while capacity < pairs.count * 2 {
+      capacity <<= 1
+    }
     var slots = [Int32](repeating: 0, count: pairs.isEmpty ? 0 : capacity)
     var entries: [Entry] = []
     var keys: [UInt8] = []
@@ -191,7 +214,9 @@ struct LiteralTable: Sendable {
       entries.append(Entry(keyStart: Int32(keys.count), keyEnd: Int32(keys.count + key.count), values: values))
       keys.append(contentsOf: key)
       var slot = Self.hash(key.span) & (capacity - 1)
-      while slots[slot] != 0 { slot = (slot + 1) & (capacity - 1) }
+      while slots[slot] != 0 {
+        slot = (slot + 1) & (capacity - 1)
+      }
       slots[slot] = Int32(entries.count)
     }
     self.slots = slots
@@ -204,7 +229,7 @@ struct LiteralTable: Sendable {
     guard !slots.isEmpty else { return 0..<0 }
     let mask = slots.count - 1
     var slot = Self.hash(key) & mask
-    let keys = self.keys.span
+    let keys = keys.span
     while true {
       let index = Int(slots[slot])
       guard index > 0 else { return 0..<0 }
@@ -219,7 +244,9 @@ struct LiteralTable: Sendable {
   private static func equal(_ keys: Span<UInt8>, from start: Int, _ key: Span<UInt8>) -> Bool {
     var i = 0
     while i < key.count {
-      if keys[start + i] != key[i] { return false }
+      if keys[start + i] != key[i] {
+        return false
+      }
       i += 1
     }
     return true
@@ -227,10 +254,10 @@ struct LiteralTable: Sendable {
 
   /// FNV-1a.
   private static func hash(_ bytes: Span<UInt8>) -> Int {
-    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    var h: UInt64 = 0xCBF2_9CE4_8422_2325
     var i = 0
     while i < bytes.count {
-      h = (h ^ UInt64(bytes[i])) &* 0x0000_0100_0000_01b3
+      h = (h ^ UInt64(bytes[i])) &* 0x0000_0100_0000_01B3
       i += 1
     }
     return Int(truncatingIfNeeded: h ^ (h >> 32))
@@ -257,7 +284,8 @@ final class IgnoreLevel: Sendable {
   let hasRules: Bool
 
   init(parent: IgnoreLevel?, directory: [UInt8], rgignore: IgnoreRules?, dotIgnore: IgnoreRules?,
-       gitignore: IgnoreRules?, gitExclude: IgnoreRules?, hasGit: Bool) {
+       gitignore: IgnoreRules?, gitExclude: IgnoreRules?, hasGit: Bool)
+  {
     self.parent = parent
     self.directory = directory
     self.rgignore = rgignore
@@ -266,7 +294,7 @@ final class IgnoreLevel: Sendable {
     self.gitExclude = gitExclude
     self.hasGit = hasGit
     insideGit = hasGit || (parent?.insideGit ?? false)
-    let own = [rgignore, dotIgnore, gitignore, gitExclude].compactMap { $0 }
+    let own = [rgignore, dotIgnore, gitignore, gitExclude].compactMap(\.self)
     needsRelativePath = own.contains { $0.needsRelativePath } || (parent?.needsRelativePath ?? false)
     hasRules = !own.isEmpty || (parent?.hasRules ?? false)
   }
@@ -317,14 +345,24 @@ struct IgnoreContext: Sendable {
           exclude = rules.match(relative, nameStart: relativeName, isDirectory: isDirectory)
         }
       }
-      if l.hasGit && !sawGit { repoRootLength = base }
+      if l.hasGit && !sawGit {
+        repoRootLength = base
+      }
       sawGit = sawGit || l.hasGit
       current = l.parent
     }
-    if custom != .none { return custom }
-    if dot != .none { return dot }
-    if git != .none { return git }
-    if exclude != .none { return exclude }
+    if custom != .none {
+      return custom
+    }
+    if dot != .none {
+      return dot
+    }
+    if git != .none {
+      return git
+    }
+    if exclude != .none {
+      return exclude
+    }
     if anyGit, let global {
       let relative = path.extracting(min(repoRootLength, path.count)...)
       return global.match(relative, nameStart: nameStart - repoRootLength, isDirectory: isDirectory)
@@ -375,9 +413,12 @@ extension StringProtocol {
   func trimmingCharacters(in set: String) -> String {
     let scalars = Set(set.unicodeScalars)
     var view = Substring(self).unicodeScalars[...]
-    while let f = view.first, scalars.contains(f) { view = view.dropFirst() }
-    while let l = view.last, scalars.contains(l) { view = view.dropLast() }
+    while let f = view.first, scalars.contains(f) {
+      view = view.dropFirst()
+    }
+    while let l = view.last, scalars.contains(l) {
+      view = view.dropLast()
+    }
     return String(String.UnicodeScalarView(view))
   }
 }
-
