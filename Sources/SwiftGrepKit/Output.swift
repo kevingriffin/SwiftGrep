@@ -128,15 +128,29 @@ final class OutputSink: Sendable {
     state.withLock { $0.sorted.append((path, data)) }
   }
 
-  /// Writes collected output in path order (component-wise, like a sorted walk).
-  func finishSorted(reverse: Bool) {
+  /// Writes collected output in `--sort` order. Paths sort component-wise,
+  /// like a sorted walk; for timestamps, files are looked up now, and those
+  /// without one sort last (first in reverse), as in ripgrep.
+  func finishSorted(by order: SortOrder) {
     let items = state.withLock { s -> [(path: [UInt8], data: [UInt8])] in
       let items = s.sorted
       s.sorted = []
       return items
     }
     var ordered = items.sorted { PathOrder.less($0.path, $1.path) }
-    if reverse {
+    if order.key != .path {
+      let times = ordered.map { item in Self.timestamp(of: item.path, order.key) }
+      let indices = ordered.indices.sorted { a, b in
+        switch (times[a], times[b]) {
+        case let (x?, y?): x != y ? x < y : a < b
+        case (_?, nil): true
+        case (nil, _?): false
+        case (nil, nil): a < b
+        }
+      }
+      ordered = indices.map { ordered[$0] }
+    }
+    if order.reverse {
       ordered.reverse()
     }
     for item in ordered {
@@ -146,6 +160,21 @@ final class OutputSink: Sendable {
         writeFile(item.data.span)
       }
     }
+  }
+}
+
+extension OutputSink {
+  /// A file's timestamp in nanoseconds, for `--sort`.
+  static func timestamp(of path: [UInt8], _ key: SortOrder.Key) -> Int? {
+    let cPath = (path.isEmpty ? Array(".".utf8) : path) + [0]
+    guard let info = try? OS.stat(cPath.span) else { return nil }
+    let time = switch key {
+    case .modified: info.st_mtim
+    case .accessed: info.st_atim
+    case .created: info.st_birthtim
+    case .path: info.st_mtim
+    }
+    return time.tv_sec * 1_000_000_000 + time.tv_nsec
   }
 }
 

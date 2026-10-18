@@ -100,26 +100,41 @@ struct PikeVM: ~Copyable {
         }
       case .look:
         let look = Look(rawValue: UInt8(nfa.argA[index]))!
-        if holds(look, at: pos, hay: hay, lineStart: lineStart, lineEnd: lineEnd) {
+        if Self.holds(look, at: pos, hay: hay, lineStart: lineStart, lineEnd: lineEnd) {
           stack.append(nfa.argB[index])
         }
+      case .capture:
+        stack.append(nfa.argB[index])
       default:
         break
       }
     }
   }
 
-  private func holds(_ look: Look, at pos: Int, hay: Span<UInt8>, lineStart: Int, lineEnd: Int) -> Bool {
+  /// Whether `look` holds at `pos` in the text `[lineStart, lineEnd)` (a
+  /// line, or the file with `-U`). Lines start and end at the text's bounds
+  /// and at `\n`; in CRLF mode also at `\r`, but never between `\r` and `\n`.
+  static func holds(_ look: Look, at pos: Int, hay: Span<UInt8>, lineStart: Int, lineEnd: Int) -> Bool {
     switch look {
-    case .startLine:
+    case .startText:
       return pos == lineStart
-    case .endLine:
+    case .endText:
       return pos == lineEnd
+    case .startLine:
+      return pos == lineStart || hay[pos - 1] == 10
+    case .endLine:
+      return pos == lineEnd || hay[pos] == 10
+    case .startLineCRLF:
+      guard pos > lineStart else { return true }
+      return hay[pos - 1] == 10 || (hay[pos - 1] == 13 && (pos >= lineEnd || hay[pos] != 10))
+    case .endLineCRLF:
+      guard pos < lineEnd else { return true }
+      return hay[pos] == 13 || (hay[pos] == 10 && (pos == lineStart || hay[pos - 1] != 13))
     default:
       let unicode = look.isUnicodeWordLook
       let before = WordChars.isWord(before: pos, in: hay, start: lineStart, unicode: unicode)
       let after = WordChars.isWord(after: pos, in: hay, end: lineEnd, unicode: unicode)
-      return look.holds(atLineStart: false, atLineEnd: false, previousIsWord: before, nextIsWord: after)
+      return look.holds(previousIsWord: before, nextIsWord: after)
     }
   }
 }

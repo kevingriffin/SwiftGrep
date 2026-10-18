@@ -41,8 +41,8 @@ struct LiteralExtractor {
       let strings = set.ranges.flatMap { r in (r.lowerBound...r.upperBound).map { [UInt8($0)] } }
       return Info(exact: strings, precise: true, required: strings)
     case let .set(set):
-      return extractSet(set.removing(10))
-    case let .group(inner):
+      return extractSet(set)
+    case let .group(inner), let .capture(_, inner):
       return extract(inner)
     case let .concat(nodes):
       return extractConcat(nodes)

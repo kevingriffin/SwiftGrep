@@ -71,7 +71,7 @@ struct ByteSet: Hashable, Sendable {
 
 /// A set of `Look` assertions as a bitmask.
 struct LookSet: Hashable, Sendable {
-  var bits: UInt16 = 0
+  var bits: UInt32 = 0
 
   @inline(__always) func contains(_ look: Look) -> Bool {
     bits & (1 << look.rawValue) != 0
@@ -86,7 +86,11 @@ struct LookSet: Hashable, Sendable {
   }
 
   var containsWordLook: Bool {
-    bits & ~(1 << Look.startLine.rawValue | 1 << Look.endLine.rawValue) != 0
+    Look.allCases.contains { $0.isWordLook && contains($0) }
+  }
+
+  var containsCRLFLook: Bool {
+    contains(.startLineCRLF) || contains(.endLineCRLF)
   }
 
   var containsUnicodeWordLook: Bool {
@@ -113,6 +117,8 @@ struct NFA: Sendable {
     /// Epsilon transitions in priority order.
     case union([StateID])
     case look(Look, next: StateID)
+    /// Records the position in a capture slot (an epsilon transition).
+    case capture(slot: Int32, next: StateID)
     case match
     case fail
   }
@@ -132,16 +138,20 @@ struct NFACompiler {
   private var nfa = NFA()
   private let stateLimit: Int
   private let pattern: String
+  /// Whether capture groups get states of their own (only `--replace`
+  /// needs them).
+  private let captures: Bool
   /// Caches compiled UTF-8 automata for large classes that appear many times.
   private var classCache: [ScalarSet: [UTF8Sequence]] = [:]
 
-  init(pattern: String, stateLimit: Int = 2_000_000) {
+  init(pattern: String, captures: Bool, stateLimit: Int = 2_000_000) {
     self.pattern = pattern
+    self.captures = captures
     self.stateLimit = stateLimit
   }
 
-  static func compile(_ node: RegexNode, pattern: String) throws(RegexError) -> NFA {
-    var compiler = NFACompiler(pattern: pattern)
+  static func compile(_ node: RegexNode, pattern: String, captures: Bool = false) throws(RegexError) -> NFA {
+    var compiler = NFACompiler(pattern: pattern, captures: captures)
     return try compiler.build(node)
   }
 
@@ -176,30 +186,20 @@ struct NFACompiler {
     case .empty:
       return next
     case let .char(c):
-      if c == 10 {
-        throw RegexError(
-          message: "the literal '\"\\n\"' is not allowed in a regex\n\nConsider enabling multiline mode with the --multiline flag (or -U for short).",
-          pattern: pattern, offset: nil,
-        )
-      }
       var s = next
       for b in UTF8Encoding.encode(c).reversed() {
         s = add(.bytes(ByteSet(b...b), next: s))
       }
       return s
     case let .byte(b):
-      guard b != 10 else { return add(.fail) }
       return add(.bytes(ByteSet(b...b), next: next))
     case let .byteSet(set):
       var bytes = ByteSet()
       for r in set.ranges where r.lowerBound <= 0xFF {
         bytes.insert(UInt8(r.lowerBound)...UInt8(min(r.upperBound, 0xFF)))
       }
-      bytes.remove(10)
       return bytes.isEmpty ? add(.fail) : add(.bytes(bytes, next: next))
-    case let .set(rawSet):
-      // The line terminator can never be part of a match.
-      let set = rawSet.removing(10)
+    case let .set(set):
       if set.isEmpty {
         return add(.fail)
       }
@@ -229,6 +229,11 @@ struct NFACompiler {
       return add(.union(starts))
     case let .group(n):
       return try compile(n, next: next)
+    case let .capture(index, n):
+      guard captures else { return try compile(n, next: next) }
+      let end = add(.capture(slot: Int32(2 * index + 1), next: next))
+      let inner = try compile(n, next: end)
+      return add(.capture(slot: Int32(2 * index), next: inner))
     case let .repeat(n, min, max, greedy):
       return try compileRepeat(n, min: min, max: max, greedy: greedy, next: next)
     }

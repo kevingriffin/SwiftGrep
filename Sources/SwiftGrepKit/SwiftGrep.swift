@@ -19,8 +19,15 @@ public enum SwiftGrep {
       case .version:
         writeStdout("sg \(version)\n")
         return 0
-      case let .typeList(additions):
-        try writeStdout(TypeMatcher.listing(additions: additions))
+      case .pcre2Version:
+        writeStdout("PCRE2 is not available in this build of SwiftGrep.\n")
+        return 1
+      case let .typeList(changes):
+        let listing = try TypeMatcher.listing(changes)
+        writeStdout(listing)
+        return listing.isEmpty ? 1 : 0
+      case let .generate(kind):
+        writeStdout(Generator.output(kind))
         return 0
       case .clearCache:
         return ListingCache.clearAll()
@@ -52,25 +59,27 @@ public enum SwiftGrep {
   static func search(_ config: Configuration, output: Int32) async throws -> Int32 {
     let start = Clock.now
     let isTerminal = isatty(output) != 0
+    let types = try TypeMatcher(config.typeChanges)
+    let overrides = try makeOverrides(config)
 
-    var matcherOptions = config.matcher
-    let patterns = config.mode == .listFiles ? [""] : config.patterns
-    if patterns.isEmpty {
-      // `-f /dev/null`: nothing can match.
-      matcherOptions.fixedStrings = false
+    // Like ripgrep, a search that can't match isn't run at all.
+    let searching = config.mode != .listFiles
+    if searching && (config.patterns.isEmpty && !config.invertMatch || config.maxCount == 0) {
+      return 1
     }
-    let matcher = try Matcher(patterns: patterns.isEmpty ? ["[^\\x{0}-\\x{10FFFF}]"] : patterns, options: matcherOptions)
+    let matcher = try makeMatcher(config)
 
     // Roots.
     var jobs: [Job] = []
-    var anyDirectory = false
     var failedRoots = false
+    var rootIsDirectory = false
     let walk = makeWalkOptions(config)
-    if config.paths.isEmpty {
-      if config.mode != .listFiles && isReadableStandardInput() {
+    let implicitPath = config.paths.isEmpty
+    let readStandardInput = implicitPath && searching && !config.standardInputConsumed && isReadableStandardInput()
+    if implicitPath {
+      if readStandardInput {
         jobs.append(.standardInput)
       } else {
-        anyDirectory = true
         jobs.append(.directory(rootJob(display: [], walk: walk, config: config)))
       }
     } else {
@@ -83,12 +92,14 @@ public enum SwiftGrep {
         do {
           info = try Stat(FilePath(path))
         } catch {
-          Diagnostics.error("\(path): IO error for operation on \(path): \(error.message)")
+          if config.messages {
+            Diagnostics.error("\(path): IO error for operation on \(path): \(error.message)")
+          }
           failedRoots = true
           continue
         }
         if info.type == .directory {
-          anyDirectory = true
+          rootIsDirectory = true
           jobs.append(.directory(rootJob(display: Array(path.utf8), walk: walk, config: config)))
         } else {
           jobs.append(.file(displayPath: Array(path.utf8)))
@@ -96,17 +107,27 @@ public enum SwiftGrep {
       }
     }
 
-    let settings = resolveSettings(config, isTerminal: isTerminal,
-                                   multipleTargets: anyDirectory || jobs.count > 1)
-    let overrides = makeOverrides(config)
-    let types = config.types.isEmpty && config.typesNot.isEmpty ? nil
-      : try TypeMatcher(select: config.types, negate: config.typesNot, additions: config.typeAdditions)
+    // ripgrep's defaults depend on whether exactly one file is searched.
+    let isOneFile = implicitPath ? readStandardInput : config.paths.count == 1 && !rootIsDirectory
+    let onlyStandardInput = implicitPath ? readStandardInput : config.paths == ["-"]
+    let settings = resolveSettings(config, isTerminal: isTerminal, isOneFile: isOneFile,
+                                   onlyStandardInput: onlyStandardInput)
 
-    let separateFiles = settings.heading || (settings.hasContext && settings.contextSeparator != nil
-      && (settings.mode == .lines || settings.mode == .onlyMatching))
-    let fileSeparator: [UInt8]? = settings.heading ? [10]
-      : separateFiles ? (settings.contextSeparator ?? []) + [10] : nil
-    let sink = OutputSink(fd: FileDescriptor(rawValue: output), fileSeparator: fileSeparator, collectForSorting: config.sort != .none)
+    // Files are separated by a blank line under --heading, and by the
+    // context separator when context is shown.
+    var fileSeparator: [UInt8]? = nil
+    if config.mode == .lines {
+      if settings.heading {
+        fileSeparator = []
+      } else if config.context != .passthru && settings.hasContext {
+        fileSeparator = config.contextSeparator
+      }
+    }
+    // A single-threaded ripgrep (sorting) ends the separator with the line
+    // terminator; its parallel output writer always uses `\n`.
+    let separatorEnd = config.sort != nil ? settings.lineTerminatorBytes : [10]
+    let sink = OutputSink(fd: FileDescriptor(rawValue: output), fileSeparator: fileSeparator.map { $0 + separatorEnd },
+                          collectForSorting: config.sort != nil)
 
     // On APFS every open() goes through a kernel lock that is shared by all
     // processes. Measured on an M4 Max (16 cores) over nixpkgs, open
@@ -117,10 +138,16 @@ public enum SwiftGrep {
     let cores = max(1, Int(sysconf(Int32(_SC_NPROCESSORS_ONLN))))
     let workerCount = config.threads ?? min(cores, 5)
 
+    let lineBuffered = switch config.buffering {
+    case .auto: isTerminal
+    case .line: true
+    case .block: false
+    }
     let run = SearchRun(
       settings: settings, matcher: matcher, walk: walk, overrides: overrides, types: types, sink: sink,
-      queue: WorkQueue(jobs), flushEachFile: isTerminal, separateFiles: separateFiles,
-      sortOutput: config.sort != .none,
+      queue: WorkQueue(jobs), flushEachFile: lineBuffered, separateFiles: fileSeparator != nil,
+      sortOutput: config.sort != nil, quitAfterMatch: config.quiet && !config.stats, messages: config.messages,
+      ignoreMessages: config.messages && config.ignoreMessages, implicitPath: implicitPath,
     )
 
     if config.debug {
@@ -136,47 +163,93 @@ public enum SwiftGrep {
         }
       }
     }
-    if config.sort != .none {
-      sink.finishSorted(reverse: config.sort == .pathReverse)
+    if let sort = config.sort {
+      sink.finishSorted(by: sort)
     }
     for case let .directory(root) in jobs {
       root.cache?.save()
     }
 
-    if config.stats {
-      let elapsed = Clock.now - start
-      let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
-      var text = "\n"
-      text += "\(run.linesMatched.load(ordering: .relaxed)) matched lines\n"
-      text += "\(run.filesMatched.load(ordering: .relaxed)) files contained matches\n"
-      text += "\(run.filesSearched.load(ordering: .relaxed)) files searched\n"
-      text += "\(run.bytesSearched.load(ordering: .relaxed)) bytes searched\n"
-      text += "\(String(format3(seconds))) seconds\n"
-      try? OS.writeAll(FileDescriptor(rawValue: output), Array(text.utf8).span)
+    let totals = run.totals.withLock { $0 }
+    if settings.stats && searching {
+      writeStatistics(totals, json: config.mode == .json, total: Clock.now - start, to: FileDescriptor(rawValue: output))
     }
 
     let matched = run.matched.load(ordering: .relaxed)
     let failed = run.failed.load(ordering: .relaxed) || failedRoots
     // Like ripgrep, an implicit search of the current directory that
     // filtered out every file is an error.
-    if config.paths.isEmpty, anyDirectory, config.mode != .listFiles, !failed,
-       run.filesSearched.load(ordering: .relaxed) == 0
-    {
-      Diagnostics.error("No files were searched, which means SwiftGrep probably applied a filter you didn't expect.")
+    if implicitPath, !readStandardInput, searching, totals.filesConsidered == 0 {
+      if config.messages {
+        Diagnostics.error("No files were searched, which means SwiftGrep probably applied a filter you didn't expect.")
+      }
       return 2
     }
-    if failed && !(config.mode == .quiet && matched) {
-      return 2
+    if matched && (config.quiet || !failed) {
+      return 0
     }
-    return matched ? 0 : 1
+    return failed ? 2 : 1
   }
 
   private typealias Clock = ContinuousClock
 
-  private static func format3(_ value: Double) -> String {
-    let millis = Int((value * 1000).rounded())
-    let fraction = String(millis % 1000)
-    return "\(millis / 1000)." + String(repeating: "0", count: 3 - fraction.count) + fraction
+  static func makeMatcher(_ config: Configuration) throws -> Matcher {
+    if config.engine == .pcre2 {
+      throw UsageError("PCRE2 is not available in this build of SwiftGrep")
+    }
+    var options = config.matcher
+    options.captures = config.replacement != nil
+    // Binary detection makes a NUL byte impossible to match.
+    options.banNUL = config.binary != .text && options.lineTerminator != 0
+    var patterns = config.mode == .listFiles ? [""] : config.patterns
+    if patterns.isEmpty {
+      // `-v -f /dev/null`: nothing matches, so every line is printed.
+      options.fixedStrings = false
+      patterns = ["[^\\x{0}-\\x{10FFFF}]"]
+    }
+    do {
+      return try Matcher(patterns: patterns, options: options)
+    } catch where config.engine == .auto {
+      let divider = String(repeating: "~", count: 79)
+      throw UsageError("regex could not be compiled with either the default regex engine or with PCRE2.\n\n"
+        + "default regex engine error:\n\(divider)\n\(error.description)\n\(divider)\n\n"
+        + "PCRE2 regex engine error:\nPCRE2 is not available in this build of SwiftGrep")
+    }
+  }
+
+  /// The `--stats` summary, after a blank line (or a JSON `summary`).
+  static func writeStatistics(_ totals: SearchTotals, json: Bool, total: Duration, to fd: FileDescriptor) {
+    var out = OutputBuffer(capacity: 1024)
+    if json {
+      out.append("{\"data\":{\"elapsed_total\":")
+      out.appendJSONDuration(nanoseconds: total.nanoseconds, sortedKeys: true)
+      out.append(",\"stats\":{\"bytes_printed\":")
+      out.appendDecimal(totals.bytesPrinted)
+      out.append(",\"bytes_searched\":")
+      out.appendDecimal(totals.bytesSearched)
+      out.append(",\"elapsed\":")
+      out.appendJSONDuration(nanoseconds: totals.nanoseconds, sortedKeys: true)
+      out.append(",\"matched_lines\":")
+      out.appendDecimal(totals.matchedLines)
+      out.append(",\"matches\":")
+      out.appendDecimal(totals.matches)
+      out.append(",\"searches\":")
+      out.appendDecimal(totals.filesSearched)
+      out.append(",\"searches_with_match\":")
+      out.appendDecimal(totals.filesMatched)
+      out.append("}},\"type\":\"summary\"}\n")
+    } else {
+      out.append("\n")
+      out.append("\(totals.matches) matches\n")
+      out.append("\(totals.matchedLines) matched lines\n")
+      out.append("\(totals.filesMatched) files contained matches\n")
+      out.append("\(totals.filesSearched) files searched\n")
+      out.append("\(totals.bytesPrinted) bytes printed\n")
+      out.append("\(totals.bytesSearched) bytes searched\n")
+      out.append(SecondsFormat.sixDecimals(nanoseconds: totals.nanoseconds) + " seconds spent searching\n")
+      out.append(SecondsFormat.sixDecimals(nanoseconds: total.nanoseconds) + " seconds total\n")
+    }
+    try? OS.writeAll(fd, out.storage.span)
   }
 
   static func isReadableStandardInput() -> Bool {
@@ -191,18 +264,37 @@ public enum SwiftGrep {
     walk.followLinks = config.followLinks
     walk.maxDepth = config.maxDepth
     walk.maxFilesize = config.maxFilesize
+    walk.oneFileSystem = config.oneFileSystem
     walk.ignore.useGitignore = !config.noIgnoreVCS
     walk.ignore.useGitExclude = !config.noIgnoreVCS && !config.noIgnoreExclude
     walk.ignore.useGlobalGitignore = !config.noIgnoreVCS && !config.noIgnoreGlobal
     walk.ignore.useDotIgnore = !config.noIgnoreDot
     walk.ignore.useRgignore = !config.noIgnoreDot
     walk.ignore.requireGit = !config.noRequireGit
+    walk.ignore.caseInsensitive = config.ignoreFileCaseInsensitive
     walk.useIgnoreFiles = walk.ignore.useGitignore || walk.ignore.useDotIgnore
     if walk.ignore.useGlobalGitignore, let path = GitConfig.globalExcludesFile(),
        let data = try? FileIO.readWholeFile(path: path)
     {
-      let rules = IgnoreRules(gitignore: data)
+      let rules = IgnoreRules(gitignore: data, caseInsensitive: config.ignoreFileCaseInsensitive)
       walk.ignore.global = rules.rules.isEmpty ? nil : rules
+    }
+    if !config.noIgnoreFiles {
+      let messages = config.messages && config.ignoreMessages
+      for path in config.ignoreFiles {
+        do {
+          let data = try FileIO.readWholeFile(path: path)
+          var errors: [String] = []
+          walk.explicitIgnores.append(IgnoreRules(gitignore: data, errors: &errors))
+          if messages && !errors.isEmpty {
+            Diagnostics.error(errors.map { "\(path): \($0)" }.joined(separator: "\n"))
+          }
+        } catch {
+          if messages {
+            Diagnostics.error("\(path): \(error.message)")
+          }
+        }
+      }
     }
     return walk
   }
@@ -219,7 +311,9 @@ public enum SwiftGrep {
       level = parentLevels(of: absolute, context: walk.ignore)
     }
     let cache = config.useCache ? ListingCache(root: absolute) : nil
-    return DirectoryJob(displayPath: display, absolutePath: absolute, depth: 0, ignore: level, ancestors: [], cache: cache)
+    let device = config.oneFileSystem ? (try? Stat(FilePath(openPath)))?.deviceID.rawValue ?? 0 : 0
+    return DirectoryJob(displayPath: display, absolutePath: absolute, depth: 0, ignore: level, ancestors: [], cache: cache,
+                        rootDevice: device)
   }
 
   /// Ignore levels for every ancestor of `path`, outermost first.
@@ -238,7 +332,7 @@ public enum SwiftGrep {
       let base = directory == [UInt8(ascii: "/")] ? "" : String(decoding: directory, as: UTF8.self)
       func rules(_ name: String) -> IgnoreRules? {
         guard let data = try? FileIO.readWholeFile(path: base + "/" + name) else { return nil }
-        let r = IgnoreRules(gitignore: data)
+        let r = IgnoreRules(gitignore: data, caseInsensitive: context.caseInsensitive)
         return r.rules.isEmpty ? nil : r
       }
       let hasGit = (try? Stat(FilePath(base + "/.git"))) != nil
@@ -254,41 +348,72 @@ public enum SwiftGrep {
   }
 
   /// `--glob` rules. A plain glob whitelists and `!glob` excludes, the inverse
-  /// of gitignore, so the rule's `negated` flag means "whitelist" here.
-  static func makeOverrides(_ config: Configuration) -> IgnoreRules? {
+  /// of gitignore, so the rule's `negated` flag means "whitelist" here. Like
+  /// ripgrep, every `--iglob` comes after every `--glob`.
+  static func makeOverrides(_ config: Configuration) throws(UsageError) -> IgnoreRules? {
     guard !config.globs.isEmpty else { return nil }
     var rules: [IgnoreRule] = []
-    for (pattern, insensitive) in config.globs {
-      guard let rule = IgnoreRules.parse(Array(pattern.utf8), caseInsensitive: insensitive || config.globCaseInsensitive) else { continue }
-      rules.append(IgnoreRule(glob: rule.glob, negated: !rule.negated, directoryOnly: rule.directoryOnly))
+    for (pattern, insensitive) in config.globs.filter({ !$0.caseInsensitive }) + config.globs.filter(\.caseInsensitive) {
+      let rule: IgnoreRule?
+      do {
+        rule = try IgnoreRules.parse(Array(pattern.utf8), caseInsensitive: insensitive || config.globCaseInsensitive,
+                                     allowUnclosedClass: false)
+      } catch {
+        throw UsageError(error.message)
+      }
+      if let rule {
+        rules.append(IgnoreRule(glob: rule.glob, negated: !rule.negated, directoryOnly: rule.directoryOnly))
+      }
     }
     return IgnoreRules(rules: rules)
   }
 
-  static func resolveSettings(_ config: Configuration, isTerminal: Bool, multipleTargets: Bool) -> OutputSettings {
+  /// ripgrep's defaults for output, which depend on the terminal and on
+  /// whether a single file is searched.
+  static func resolveSettings(_ config: Configuration, isTerminal: Bool, isOneFile: Bool, onlyStandardInput: Bool)
+    -> OutputSettings
+  {
     let color: Bool = switch config.color {
     case .never: false
     case .always, .ansi: true
-    case .auto: isTerminal && FileIO.environment("TERM") != "dumb"
+    case .auto:
+      isTerminal && FileIO.environment("TERM").map { $0 != "dumb" } == true && FileIO.environment("NO_COLOR") == nil
     }
-    let printsLines = config.mode == .lines || config.mode == .onlyMatching
+    let kind: ReportKind = if config.quiet {
+      config.mode == .filesWithoutMatch ? .quietWithoutMatch : .quietWithMatch
+    } else {
+      switch config.mode {
+      case .lines, .listFiles: .standard
+      case .json: .json
+      case .count: .count
+      case .countMatches: .countMatches
+      case .filesWithMatches: .pathWithMatch
+      case .filesWithoutMatch: .pathWithoutMatch
+      }
+    }
+    let column = config.column ?? config.vimgrep
+    let lineNumbers = config.lineNumbers ?? {
+      if config.quiet {
+        return false
+      }
+      switch config.mode {
+      case .lines: return isTerminal && !onlyStandardInput || column || config.vimgrep
+      case .json: return true
+      default: return false
+      }
+    }()
+    let heading = switch config.heading {
+    case nil: !config.vimgrep && isTerminal
+    case true?: !config.vimgrep
+    case false?: false
+    }
+    var hyperlinks = config.hyperlinkFormat
+    if color, !hyperlinks.isEmpty {
+      hyperlinks.host = Array(Hostname.lookup(command: config.hostnameBinary).utf8)
+    }
     return OutputSettings(
-      mode: config.mode,
-      invert: config.invertMatch,
-      lineNumbers: config.vimgrep || (config.lineNumbers ?? isTerminal),
-      column: config.column || config.vimgrep,
-      withFilename: config.vimgrep || (config.withFilename ?? multipleTargets),
-      heading: printsLines && !config.vimgrep && (config.heading ?? isTerminal),
-      color: color ? ColorSpec() : nil,
-      nullAfterPath: config.nullAfterPath,
-      vimgrep: config.vimgrep,
-      before: config.beforeContext,
-      after: config.afterContext,
-      maxCount: config.maxCount,
-      includeZero: config.includeZero,
-      binary: config.binary,
-      stripByteOrderMark: config.stripByteOrderMark,
-      contextSeparator: config.contextSeparator,
+      config, kind: kind, lineNumbers: lineNumbers, withFilename: config.withFilename ?? (config.vimgrep || !isOneFile),
+      heading: heading, colors: color ? Palette(config.colors) : nil, hyperlinks: hyperlinks,
     )
   }
 }

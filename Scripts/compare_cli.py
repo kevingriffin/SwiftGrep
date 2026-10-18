@@ -11,7 +11,7 @@ print files in a nondeterministic order. On a terminal, stderr is mixed into
 the output, so the "rg: "/"sg: " message prefixes are normalized. With -v,
 differing lines are shown. The queries assume a Linux kernel checkout.
 """
-import os, subprocess, sys, shlex
+import os, re, subprocess, sys, shlex
 
 args = [a for a in sys.argv[1:] if a != "-v"]
 verbose = "-v" in sys.argv[1:]
@@ -136,6 +136,85 @@ Q = [
   ["-niC1", "rq_clock_pelt", P],
   ["-nC", "1", "rq_clock_pelt", P],
   ["-C1n", "rq_clock_pelt", P],
+  # Output formatting.
+  ["-b", "update_curr", P],
+  ["-b", "-o", "rq_[a-z]+", "kernel/sched/core.c"],
+  ["--byte-offset", "--vimgrep", "update_curr", P],
+  ["--trim", "-n", "update_curr", P],
+  ["-M", "40", "update_curr", P],
+  ["-M", "40", "--max-columns-preview", "update_curr", P],
+  ["-M", "20", "--max-columns-preview", "-o", "--column", "update_curr", P],
+  ["--passthru", "-n", "rq_clock_pelt", "kernel/sched/pelt.h"],
+  ["--passthrough", "-c", "rq_clock_pelt", P],
+  ["--passthru", "-m", "1", "-n", "rq_clock_pelt", "kernel/sched/pelt.h"],
+  ["--field-match-separator", "=>", "-n", "update_curr", P],
+  ["--field-context-separator", "~", "-C1", "-n", "update_curr", P],
+  ["--context-separator", "\\x41\\t", "-C1", "update_curr", P],
+  ["--path-separator", "%", "-l", "update_curr", P],
+  ["--path-separator", "%", "--files", P],
+  ["--colors", "match:fg:blue", "--color=always", "update_curr", P],
+  ["--colors", "highlight:bg:yellow", "--color=always", "-n", "update_curr", P],
+  ["--colors", "path:none", "--colors", "line:style:underline", "--color=always", "-n", "update_curr", P],
+  ["--colors", "match:fg:300", "x", P],
+  ["--hyperlink-format", "vscode", "--color=always", "-n", "update_curr", P],
+  ["--hyperlink-format", "kitty", "--color=always", "-l", "update_curr", P],
+  ["--hyperlink-format", "nope", "x", P],
+  ["--null", "--heading", "update_curr", P],
+  ["--null", "--files", P],
+  # JSON and statistics (timings are normalized).
+  ["--json", "update_curr", P],
+  ["--json", "-C1", "update_curr", P],
+  ["--json", "-v", "-m2", "rq", "kernel/sched/core.c"],
+  ["--json", "-c", "rq", P],
+  ["-c", "--json", "rq", P],
+  ["--stats", "update_curr", P],
+  ["--stats", "-c", "rq", P],
+  ["--stats", "-l", "rq", P],
+  ["--stats", "-m1", "rq", P],
+  # Search behavior.
+  ["--stop-on-nonmatch", "-n", "rq", P],
+  ["-v", "--stop-on-nonmatch", "-m1", "-A1", "x", "kernel/sched/sched.h"],
+  ["-m", "1", "-v", "-A", "2", "-n", "rq", P],
+  ["-A1", "-C3", "-n", "rq_clock_pelt", P],
+  ["--include-zero", "--count-matches", "zzz", P],
+  ["--no-unicode", "-c", "\\w+", P],
+  ["--unicode", "--no-unicode", "-c", "\\w", P],
+  ["--engine", "auto", "-c", "rq", P],
+  ["--regex-size-limit", "1K", "-c", "\\w{40}", P],
+  ["--dfa-size-limit", "10", "-c", "\\w+_rq", P],
+  # Sorting.
+  ["--sort", "modified", "-l", "rq", P],
+  ["--sortr", "accessed", "-l", "rq", P],
+  ["--sort-files", "-l", "rq", P],
+  ["--sort", "path", "--no-sort-files", "-c", "rq", P],
+  ["--sort", "bogus", "x"],
+  # Negations.
+  ["-F", "--no-fixed-strings", "-c", "rq.", P],
+  ["--no-fixed-strings", "-F", "-c", "rq.", P],
+  ["-v", "--no-invert-match", "-c", "rq", P],
+  ["--column", "--no-column", "-n", "update_curr", P],
+  ["--no-ignore", "--ignore", "--files", "-g", "*.o", "."],
+  ["--hidden", "--no-hidden", "--files", "-g", ".*", "-d", "1", "."],
+  ["--stats", "--no-stats", "-c", "rq", P],
+  ["--trim", "--no-trim", "-n", "update_curr", P],
+  ["-a", "--no-text", "-c", "ELF", "."],
+  ["--json", "--no-json", "-c", "rq", P],
+  # Files and types.
+  ["--files", "-g", "*.{c,h}", "kernel/sched"],
+  ["--files", "-g", "*.{c", "kernel/sched"],
+  ["--files", "--iglob", "*.C", "-g", "!*.c", P],
+  ["--files", "--type-add", "foo:*.{h,S}", "-t", "foo", "kernel"],
+  ["--files", "--type-clear", "c", "-t", "c", P],
+  ["--files", "-T", "h", "-t", "c", P],
+  ["--files", "-t", "c", "-T", "h", P],
+  ["--files", "-t", "all", "-T", "c", "kernel/sched"],
+  ["--line-buffered", "-c", "rq", P],
+  ["--block-buffered", "-n", "update_curr", P],
+  ["--no-messages", "x", "nonexistent", P],
+  ["-uuuu", "x"],
+  ["--pretty", "-q", "rq", P],
+  ["-q", "--files", P],
+  ["--files", "-l", "rq", P],
 ]
 def run(binary, args, tty):
     cmd = [binary] + args
@@ -144,17 +223,23 @@ def run(binary, args, tty):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
     out = r.stdout
     if tty:
-        # script(1) echoes ^D and backspaces, and translates newlines.
-        out = out.replace(b"^D\x08\x08", b"").replace(b"\r\n", b"\n")
+        # script(1) echoes ^D and backspaces, and translates newlines (a
+        # large write can come out with an extra \r).
+        out = out.replace(b"^D\x08\x08", b"").replace(b"\r\r\n", b"\n").replace(b"\r\n", b"\n")
         out = out.replace(b"rg: ", b"X: ").replace(b"sg: ", b"X: ")
     out = out.replace(b"\x00", b"\x00\n")
+    # --stats and --json timings differ from run to run.
+    out = re.sub(rb"\d+\.\d{6} seconds", b"T seconds", out)
+    out = re.sub(rb'"(secs|nanos)":\d+', rb'"\1":0', out)
+    out = re.sub(rb'"human":"[0-9.]+s"', b'"human":"T"', out)
     return r.returncode, out, r.stderr.replace(b"rg: ", b"X: ").replace(b"sg: ", b"X: ")
 fails = 0
 for tty in (False, True):
     for args in Q:
         rc1, o1, e1 = run("rg", args, tty)
         rc2, o2, e2 = run(sg, args, tty)
-        exact = any(a in ("--sort", "--sortr", "--sort=path") for a in args) and "none" not in args
+        exact = (any(a in ("--sort", "--sortr", "--sort=path", "--sort-files") for a in args) and "none" not in args
+                 and "--no-sort-files" not in args)
         same_out = o1 == o2 if exact else sorted(o1.split(b"\n")) == sorted(o2.split(b"\n"))
         # rg's file order is nondeterministic, so compare output as sorted lines unless sorted.
         if rc1 == rc2 and same_out:

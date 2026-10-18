@@ -6,6 +6,17 @@ struct ParseFlags: Hashable, Sendable {
   var swapGreed = false
   var ignoreWhitespace = false
   var unicode = true
+  /// CRLF mode: `^` and `$` treat `\r` as a line terminator too, and `.`
+  /// doesn't match it.
+  var crlf = false
+}
+
+/// The capturing groups seen so far. Like ripgrep, which joins its patterns
+/// into one regex, groups are numbered across all patterns.
+struct CaptureGroups: Sendable {
+  /// The number of groups, not counting group 0 (the whole match).
+  var count = 0
+  var names: [String: Int] = [:]
 }
 
 /// A recursive descent parser for Rust `regex` crate syntax (the dialect ripgrep uses).
@@ -14,19 +25,27 @@ struct Parser {
   private let chars: [Unicode.Scalar]
   private var pos = 0
   private var flags: ParseFlags
+  private var groups: CaptureGroups
 
-  init(_ pattern: String, flags: ParseFlags) {
+  init(_ pattern: String, flags: ParseFlags, groups: CaptureGroups) {
     self.pattern = pattern
     chars = Array(pattern.unicodeScalars)
     self.flags = flags
+    self.groups = groups
   }
 
   static func parse(_ pattern: String, flags: ParseFlags) throws(RegexError) -> RegexNode {
-    var parser = Parser(pattern, flags: flags)
+    var groups = CaptureGroups()
+    return try parse(pattern, flags: flags, groups: &groups)
+  }
+
+  static func parse(_ pattern: String, flags: ParseFlags, groups: inout CaptureGroups) throws(RegexError) -> RegexNode {
+    var parser = Parser(pattern, flags: flags, groups: groups)
     let node = try parser.parseAlternation(depth: 0)
     guard parser.pos == parser.chars.count else {
       throw parser.error("unopened group", at: parser.pos)
     }
+    groups = parser.groups
     return node
   }
 
@@ -198,7 +217,18 @@ struct Parser {
         }
         guard current == ">" else { throw error("unclosed capture group name", at: nameStart) }
         guard pos > nameStart else { throw error("empty capture group name", at: nameStart) }
+        let name = String(String.UnicodeScalarView(chars[nameStart..<pos]))
+        guard groups.names[name] == nil else { throw error("duplicate capture group name", at: nameStart) }
         pos += 1
+        groups.count += 1
+        let index = groups.count
+        groups.names[name] = index
+        let saved = flags
+        let inner = try parseAlternation(depth: depth + 1)
+        flags = saved
+        guard current == ")" else { throw error("unclosed group", at: open) }
+        pos += 1
+        return .capture(index, inner)
       case "=", "!":
         throw error("look-around, including look-ahead and look-behind, is not supported", at: open)
       case "<" where peek() == "=" || peek() == "!":
@@ -219,7 +249,7 @@ struct Parser {
           case "U": newFlags.swapGreed = !negate
           case "x": newFlags.ignoreWhitespace = !negate
           case "u": newFlags.unicode = !negate
-          case "R": break // CRLF mode: accepted, treated as LF.
+          case "R": newFlags.crlf = !negate
           default:
             throw error("unrecognized flag", at: pos)
           }
@@ -246,12 +276,14 @@ struct Parser {
         return .group(inner)
       }
     }
+    groups.count += 1
+    let index = groups.count
     let saved = flags
     let inner = try parseAlternation(depth: depth + 1)
     flags = saved
     guard current == ")" else { throw error("unclosed group", at: open) }
     pos += 1
-    return .group(inner)
+    return .capture(index, inner)
   }
 
   // MARK: - Atoms
@@ -261,16 +293,20 @@ struct Parser {
     switch c {
     case ".":
       pos += 1
-      if flags.unicode {
-        return .set(flags.dotMatchesNewline ? .all : ScalarSet.all.removing(10))
+      var dot = flags.unicode ? ScalarSet.all : ScalarSet([0...0xFF])
+      if !flags.dotMatchesNewline {
+        dot = dot.removing(10)
+        if flags.crlf {
+          dot = dot.removing(13)
+        }
       }
-      return .byteSet(ScalarSet([0...0xFF]).removing(flags.dotMatchesNewline ? 0x100 : 10))
+      return flags.unicode ? .set(dot) : .byteSet(dot)
     case "^":
       pos += 1
-      return .look(.startLine)
+      return .look(flags.crlf ? .startLineCRLF : .startLine)
     case "$":
       pos += 1
-      return .look(.endLine)
+      return .look(flags.crlf ? .endLineCRLF : .endLine)
     case "[":
       return try parseClass()
     case "\\":
@@ -328,9 +364,9 @@ struct Parser {
     case ">":
       return .look(flags.unicode ? .wordEnd : .wordEndASCII)
     case "A":
-      return .look(.startLine)
+      return .look(.startText)
     case "z":
-      return .look(.endLine)
+      return .look(.endText)
     case "Z":
       throw error("unrecognized escape sequence", at: start)
     case "1"..."9":

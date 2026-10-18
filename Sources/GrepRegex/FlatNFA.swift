@@ -3,14 +3,15 @@
 @usableFromInline
 struct FlatNFA: Sendable {
   enum Kind: UInt8, Sendable {
-    case bytes, sparse, union, look, match, fail
+    case bytes, sparse, union, look, capture, match, fail
   }
 
   /// Per state: kind, and two arguments whose meaning depends on the kind:
-  /// - bytes:  a = index into `byteSets`, b = next state
-  /// - sparse: a = first index into `edges`, b = edge count
-  /// - union:  a = first index into `alternatives`, b = count
-  /// - look:   a = `Look.rawValue`, b = next state
+  /// - bytes:   a = index into `byteSets`, b = next state
+  /// - sparse:  a = first index into `edges`, b = edge count
+  /// - union:   a = first index into `alternatives`, b = count
+  /// - look:    a = `Look.rawValue`, b = next state
+  /// - capture: a = slot, b = next state
   let kinds: [Kind]
   let argA: [Int32]
   let argB: [Int32]
@@ -24,6 +25,12 @@ struct FlatNFA: Sendable {
 
   var count: Int {
     kinds.count
+  }
+
+  /// An estimate of the compiled size in bytes, scaled to what ripgrep's
+  /// regex engine reports, for `--regex-size-limit`.
+  var memoryUsage: Int {
+    kinds.count * 40 + edges.count * MemoryLayout<NFA.Transition>.stride + alternatives.count * 4
   }
 
   init(_ nfa: NFA) {
@@ -55,6 +62,8 @@ struct FlatNFA: Sendable {
         alternatives.append(contentsOf: alts)
       case let .look(look, next):
         kinds.append(.look); a.append(Int32(look.rawValue)); b.append(next)
+      case let .capture(slot, next):
+        kinds.append(.capture); a.append(slot); b.append(next)
       case .match:
         kinds.append(.match); a.append(0); b.append(0)
       case .fail:
@@ -192,9 +201,9 @@ enum WordChars {
   }
 }
 
-enum UTF8Decoding {
+public enum UTF8Decoding {
   /// Decodes one scalar starting at `i`. Returns nil for invalid UTF-8.
-  static func decodeScalar(_ p: Span<UInt8>, at i: Int, end: Int) -> (value: UInt32, length: Int)? {
+  public static func decodeScalar(_ p: Span<UInt8>, at i: Int, end: Int) -> (value: UInt32, length: Int)? {
     let b0 = UInt32(p[i])
     if b0 < 0x80 {
       return (b0, 1)

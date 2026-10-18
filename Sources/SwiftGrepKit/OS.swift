@@ -173,6 +173,122 @@ enum OS {
     return names
   }
 
+  // MARK: - Processes
+
+  /// The output of a command run to completion.
+  struct ProcessResult {
+    var status: Int32
+    var output: [UInt8]
+    var error: [UInt8]
+  }
+
+  /// Runs `arguments` (the command is looked up in `PATH`) with standard
+  /// input from `input`, or `/dev/null`, collecting its output and errors.
+  /// Throws if the command can't be started.
+  static func spawn(_ arguments: [String], input: FileDescriptor? = nil) throws(Errno) -> ProcessResult {
+    precondition(!arguments.isEmpty)
+    var outputPipe = try makePipe()
+    var errorPipe = try makePipe()
+    defer {
+      for fd in [outputPipe[0], outputPipe[1], errorPipe[0], errorPipe[1]] where fd >= 0 {
+        close(fd)
+      }
+    }
+    var actions: posix_spawn_file_actions_t? = nil
+    unsafe posix_spawn_file_actions_init(&actions)
+    defer { unsafe posix_spawn_file_actions_destroy(&actions) }
+    if let input {
+      unsafe posix_spawn_file_actions_adddup2(&actions, input.rawValue, 0)
+    } else {
+      unsafe posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+    }
+    unsafe posix_spawn_file_actions_adddup2(&actions, outputPipe[1], 1)
+    unsafe posix_spawn_file_actions_adddup2(&actions, errorPipe[1], 2)
+    // The child gets only these three descriptors, so children spawned by
+    // other workers at the same time never hold each other's pipes open.
+    var attributes: posix_spawnattr_t? = nil
+    unsafe posix_spawnattr_init(&attributes)
+    defer { unsafe posix_spawnattr_destroy(&attributes) }
+    unsafe posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+    var argv: [UnsafeMutablePointer<CChar>?] = unsafe arguments.map { unsafe strdup($0) } + [nil]
+    defer {
+      for unsafe pointer in unsafe argv {
+        unsafe free(pointer)
+      }
+    }
+    var pid: pid_t = 0
+    let spawned = unsafe posix_spawnp(&pid, argv[0], &actions, &attributes, &argv, environ)
+    guard spawned == 0 else { throw Errno(rawValue: spawned) }
+    close(outputPipe[1])
+    outputPipe[1] = -1
+    close(errorPipe[1])
+    errorPipe[1] = -1
+    var result = ProcessResult(status: 0, output: [], error: [])
+    drain(output: OpenFileView(outputPipe[0]), error: OpenFileView(errorPipe[0]), into: &result)
+    var status: Int32 = 0
+    while unsafe waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+    // WIFEXITED / WEXITSTATUS; a signal counts as a failure.
+    result.status = status & 0x7F == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
+    return result
+  }
+
+  /// A pipe's read and write ends.
+  private static func makePipe() throws(Errno) -> [Int32] {
+    var ends: [Int32] = [-1, -1]
+    guard unsafe pipe(&ends) == 0 else { throw Errno(rawValue: errno) }
+    return ends
+  }
+
+  /// A borrowed descriptor (owned by the caller).
+  struct OpenFileView {
+    let fd: Int32
+    init(_ fd: Int32) {
+      self.fd = fd
+    }
+  }
+
+  /// Reads both pipes until they close, so a child that fills one of them
+  /// can't block forever.
+  private static func drain(output: OpenFileView, error: OpenFileView, into result: inout ProcessResult) {
+    var open = [output.fd, error.fd]
+    var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+    while !open.isEmpty {
+      var fds = open.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
+      let ready = unsafe poll(&fds, nfds_t(fds.count), -1)
+      if ready < 0 {
+        if errno == EINTR {
+          continue
+        }
+        return
+      }
+      for entry in fds where entry.revents != 0 {
+        let n = chunk.withUnsafeMutableBytes { unsafe Darwin.read(entry.fd, $0.baseAddress, $0.count) }
+        if n > 0 {
+          if entry.fd == output.fd {
+            result.output.append(contentsOf: chunk[0..<n])
+          } else {
+            result.error.append(contentsOf: chunk[0..<n])
+          }
+        } else if n == 0 || errno != EINTR {
+          open.removeAll { $0 == entry.fd }
+        }
+      }
+    }
+  }
+
+  /// The standard output of a command that succeeded, or nil.
+  static func run(_ arguments: [String]) -> [UInt8]? {
+    guard let result = try? spawn(arguments), result.status == 0 else { return nil }
+    return result.output
+  }
+
+  static func hostname() -> String? {
+    var buffer = [CChar](repeating: 0, count: 256)
+    guard unsafe gethostname(&buffer, buffer.count) == 0 else { return nil }
+    let name = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+    return String(decoding: name, as: UTF8.self)
+  }
+
   // MARK: - Process environment
 
   static func environment(_ name: String) -> String? {

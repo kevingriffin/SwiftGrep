@@ -80,66 +80,116 @@ final class IgnoreRules: Sendable {
     self.candidates = candidates
   }
 
-  /// Parses gitignore syntax.
-  convenience init(gitignore contents: some Collection<UInt8>, caseInsensitive: Bool = false) {
+  /// Parses an ignore file. Lines that can't be parsed are skipped and
+  /// described in `errors` (`line N: ...`), as ripgrep reports them; like
+  /// ripgrep, reading stops at a line that isn't valid UTF-8.
+  convenience init(gitignore contents: [UInt8], caseInsensitive: Bool = false, errors: inout [String]) {
     var rules: [IgnoreRule] = []
-    var line: [UInt8] = []
-    for byte in contents {
-      if byte == 10 {
-        if let rule = Self.parse(line, caseInsensitive: caseInsensitive) {
+    var lineNumber = 0
+    var start = 0
+    // Most files are valid UTF-8 throughout; only otherwise is each line checked.
+    let valid = (try? UTF8Span(validating: contents.span)) != nil
+    while start < contents.count {
+      lineNumber += 1
+      let newline = contents[start...].firstIndex(of: 10) ?? contents.count
+      var line = contents[start..<newline]
+      start = newline + 1
+      if line.last == 13 {
+        line = line.dropLast()
+      }
+      if lineNumber == 1, line.starts(with: [0xEF, 0xBB, 0xBF]) {
+        line = line.dropFirst(3)
+      }
+      guard valid || (try? UTF8Span(validating: Array(line).span)) != nil else {
+        errors.append("line \(lineNumber): stream did not contain valid UTF-8")
+        break
+      }
+      do {
+        if let rule = try Self.parse(Array(line), caseInsensitive: caseInsensitive) {
           rules.append(rule)
         }
-        line.removeAll(keepingCapacity: true)
-      } else {
-        line.append(byte)
+      } catch {
+        errors.append("line \(lineNumber): \(error.message)")
       }
-    }
-    if let rule = Self.parse(line, caseInsensitive: caseInsensitive) {
-      rules.append(rule)
     }
     self.init(rules: rules)
   }
 
-  static func parse(_ raw: [UInt8], caseInsensitive: Bool) -> IgnoreRule? {
-    var line = raw
-    if line.last == 13 {
-      line.removeLast()
-    } // CRLF files
-    // Trailing spaces are ignored unless escaped.
-    while let last = line.last, last == UInt8(ascii: " ") {
-      if line.count >= 2 && line[line.count - 2] == UInt8(ascii: "\\") {
-        break
-      }
-      line.removeLast()
+  convenience init(gitignore contents: [UInt8], caseInsensitive: Bool = false) {
+    var errors: [String] = []
+    self.init(gitignore: contents, caseInsensitive: caseInsensitive, errors: &errors)
+  }
+
+  /// A rule that can't be parsed.
+  struct LineError: Error {
+    /// `error parsing glob 'LINE': REASON`
+    let message: String
+  }
+
+  /// One line of an ignore file or one `--glob`, as ripgrep's gitignore
+  /// builder reads it. Returns nil for blank lines and comments. An unclosed
+  /// `[` is literal in ignore files but an error in `--glob`.
+  static func parse(_ raw: [UInt8], caseInsensitive: Bool, allowUnclosedClass: Bool = true) throws(LineError) -> IgnoreRule? {
+    var line = raw[...]
+    guard line.first != UInt8(ascii: "#") else { return nil }
+    // Trailing whitespace is ignored unless the line ends with "\ ".
+    if !line.suffix(2).elementsEqual([UInt8(ascii: "\\"), UInt8(ascii: " ")]) {
+      line = Self.trimmingTrailingWhitespace(line)
     }
-    guard let first = line.first, first != UInt8(ascii: "#") else { return nil }
+    guard !line.isEmpty else { return nil }
+    let original = line
     var negated = false
-    if first == UInt8(ascii: "!") {
-      negated = true
-      line.removeFirst()
-    } else if first == UInt8(ascii: "\\"), line.count > 1,
-              line[1] == UInt8(ascii: "!") || line[1] == UInt8(ascii: "#")
-    {
-      line.removeFirst()
+    var absolute = false
+    if line.starts(with: [UInt8(ascii: "\\"), UInt8(ascii: "!")]) || line.starts(with: [UInt8(ascii: "\\"), UInt8(ascii: "#")]) {
+      line = line.dropFirst()
+      absolute = line.first == UInt8(ascii: "/")
+    } else {
+      if line.first == UInt8(ascii: "!") {
+        negated = true
+        line = line.dropFirst()
+      }
+      if line.first == UInt8(ascii: "/") {
+        line = line.dropFirst()
+        absolute = true
+      }
     }
     var directoryOnly = false
     if line.last == UInt8(ascii: "/") {
       directoryOnly = true
-      line.removeLast()
+      line = line.dropLast()
+      if line.last == UInt8(ascii: "\\") {
+        line = line.dropLast()
+      }
     }
-    guard !line.isEmpty else { return nil }
-    // A slash anywhere but the end anchors the pattern to the file's directory.
-    var anchored = line.contains(UInt8(ascii: "/"))
-    if line.first == UInt8(ascii: "/") {
-      line.removeFirst()
+    // A pattern without a slash matches at any depth.
+    var glob = Array(line)
+    if !absolute && !line.contains(UInt8(ascii: "/")) && !glob.starts(with: Array("**/".utf8)) && glob != Array("**".utf8) {
+      glob = Array("**/".utf8) + glob
     }
-    // `**/name` matches at any depth, just like an unanchored name.
-    if line.starts(with: Array("**/".utf8)), !line.dropFirst(3).contains(UInt8(ascii: "/")) {
-      line.removeFirst(3)
-      anchored = false
+    if glob.count >= 3 && glob.suffix(3).elementsEqual("/**".utf8) {
+      glob += Array("/*".utf8)
     }
-    return IgnoreRule(glob: Glob(line, anchored: anchored, caseInsensitive: caseInsensitive),
-                      negated: negated, directoryOnly: directoryOnly)
+    do {
+      let parsed = try Glob(parsing: glob, anchored: true, caseInsensitive: caseInsensitive,
+                            allowUnclosedClass: allowUnclosedClass)
+      return IgnoreRule(glob: parsed, negated: negated, directoryOnly: directoryOnly)
+    } catch {
+      throw LineError(message: "error parsing glob '\(String(decoding: original, as: UTF8.self))': \(error.message)")
+    }
+  }
+
+  /// Rust's `trim_end`: drops trailing Unicode whitespace.
+  private static func trimmingTrailingWhitespace(_ line: ArraySlice<UInt8>) -> ArraySlice<UInt8> {
+    var end = line.endIndex
+    while end > line.startIndex, [9, 10, 11, 12, 13, 32].contains(line[end - 1]) {
+      end -= 1
+    }
+    guard end > line.startIndex, line[end - 1] >= 0x80 else { return line[..<end] }
+    var scalars = String(decoding: line[..<end], as: UTF8.self).unicodeScalars[...]
+    while let last = scalars.last, last.properties.isWhitespace {
+      scalars = scalars.dropLast()
+    }
+    return ArraySlice(String(String.UnicodeScalarView(scalars)).utf8)
   }
 
   /// The last matching rule decides.
@@ -308,6 +358,8 @@ struct IgnoreContext: Sendable {
   var useGitExclude = true
   var useGlobalGitignore = true
   var requireGit = true
+  /// `--ignore-file-case-insensitive`.
+  var caseInsensitive = false
   var global: IgnoreRules?
 
   /// Matches an entry against the chain of levels, mirroring the precedence of

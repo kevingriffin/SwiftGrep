@@ -23,9 +23,24 @@ public enum Look: UInt8, Sendable, Hashable, CaseIterable {
   case wordEndASCII
   case wordStartHalfASCII
   case wordEndHalfASCII
+  /// `^` and `$` in CRLF mode (`--crlf`, `(?R)`): `\r` ends lines too, but
+  /// no line starts or ends between a `\r` and a `\n`.
+  case startLineCRLF
+  case endLineCRLF
+  /// `\A` and `\z`: the start and end of the text, which is the line in
+  /// line-by-line searches and the file with `-U`.
+  case startText
+  case endText
+
+  var isLineLook: Bool {
+    switch self {
+    case .startLine, .endLine, .startLineCRLF, .endLineCRLF, .startText, .endText: true
+    default: false
+    }
+  }
 
   var isWordLook: Bool {
-    self != .startLine && self != .endLine
+    !isLineLook
   }
 
   var isUnicodeWordLook: Bool {
@@ -35,13 +50,12 @@ public enum Look: UInt8, Sendable, Hashable, CaseIterable {
     }
   }
 
-  /// Evaluates the assertion given the word-ness of the surrounding characters
-  /// and whether the position is at a line boundary.
+  /// Evaluates a word assertion given the word-ness of the surrounding
+  /// characters.
   @inline(__always)
-  func holds(atLineStart: Bool, atLineEnd: Bool, previousIsWord: Bool, nextIsWord: Bool) -> Bool {
+  func holds(previousIsWord: Bool, nextIsWord: Bool) -> Bool {
     switch self {
-    case .startLine: atLineStart
-    case .endLine: atLineEnd
+    case .startLine, .endLine, .startLineCRLF, .endLineCRLF, .startText, .endText: false
     case .wordBoundary, .wordBoundaryASCII: previousIsWord != nextIsWord
     case .notWordBoundary, .notWordBoundaryASCII: previousIsWord == nextIsWord
     case .wordStart, .wordStartASCII: !previousIsWord && nextIsWord
@@ -69,6 +83,8 @@ indirect enum RegexNode: Sendable, Hashable {
   case alternate([RegexNode])
   case `repeat`(RegexNode, min: Int, max: Int?, greedy: Bool)
   case group(RegexNode)
+  /// A capturing group; group 0 is the whole match, so indices start at 1.
+  case capture(Int, RegexNode)
 
   /// Whether the expression contains any character with uppercase letters, used by smart case.
   var containsUppercaseLiteral: Bool {
@@ -78,7 +94,7 @@ indirect enum RegexNode: Sendable, Hashable {
       return s.properties.isUppercase
     case let .concat(nodes), let .alternate(nodes):
       return nodes.contains { $0.containsUppercaseLiteral }
-    case let .repeat(node, _, _, _), let .group(node):
+    case let .repeat(node, _, _, _), let .group(node), let .capture(_, node):
       return node.containsUppercaseLiteral
     default:
       return false
@@ -89,7 +105,7 @@ indirect enum RegexNode: Sendable, Hashable {
     switch self {
     case .look: true
     case let .concat(nodes), let .alternate(nodes): nodes.contains { $0.containsLook }
-    case let .repeat(node, _, _, _), let .group(node): node.containsLook
+    case let .repeat(node, _, _, _), let .group(node), let .capture(_, node): node.containsLook
     default: false
     }
   }
@@ -104,7 +120,7 @@ indirect enum RegexNode: Sendable, Hashable {
     case let .concat(nodes): nodes.reduce(0) { $0 + $1.minLength }
     case let .alternate(nodes): nodes.map(\.minLength).min() ?? 0
     case let .repeat(node, min, _, _): node.minLength * min
-    case let .group(node): node.minLength
+    case let .group(node), let .capture(_, node): node.minLength
     }
   }
 }
@@ -141,8 +157,20 @@ public struct RegexError: Error, Sendable, CustomStringConvertible {
   public let message: String
   public let pattern: String
   public let offset: Int?
+  /// The message stands alone, without the pattern (compilation limits).
+  public var standalone = false
+
+  init(message: String, pattern: String, offset: Int?, standalone: Bool = false) {
+    self.message = message
+    self.pattern = pattern
+    self.offset = offset
+    self.standalone = standalone
+  }
 
   public var description: String {
+    if standalone {
+      return message
+    }
     guard let offset else { return "regex parse error:\n    \(pattern)\nerror: \(message)" }
     let scalars = Array(pattern.unicodeScalars)
     let caretColumn = String(String.UnicodeScalarView(scalars.prefix(offset))).count

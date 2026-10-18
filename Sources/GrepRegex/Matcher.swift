@@ -15,6 +15,26 @@ public struct MatcherOptions: Sendable, Hashable {
   public var wordRegexp = false
   /// Only match whole lines (`-x`).
   public var lineRegexp = false
+  /// Unicode mode: `\w`, `.` and classes are Unicode aware (`--no-unicode`
+  /// turns it off, like `(?-u)`).
+  public var unicode = true
+  /// Matches may span lines (`-U`).
+  public var multiline = false
+  /// With `multiline`, `.` matches line terminators too (`--multiline-dotall`).
+  public var multilineDotAll = false
+  /// `$` matches before `\r\n` and `.` doesn't match `\r` (`--crlf`).
+  public var crlf = false
+  /// The byte that ends lines: `\n`, or NUL with `--null-data`.
+  public var lineTerminator: UInt8 = 10
+  /// The largest compiled pattern, in bytes (`--regex-size-limit`).
+  public var sizeLimit = 100 << 20
+  /// The lazy DFA's cache per search thread, in bytes (`--dfa-size-limit`).
+  public var dfaSizeLimit = 4 << 20
+  /// Reject patterns that need a NUL byte, which binary detection makes
+  /// impossible to match (as ripgrep does unless `--text` is given).
+  public var banNUL = false
+  /// Track capture groups, for `--replace`.
+  public var captures = false
 
   public init() {}
 }
@@ -29,6 +49,11 @@ public final class Matcher: Sendable {
   let prefilterIsExact: Bool
   /// Whether case-insensitive matching ended up enabled.
   public let isCaseInsensitive: Bool
+  let dfaCacheBytes: Int
+  /// The byte that ends lines, or nil with `-U`.
+  let terminator: UInt8?
+  let crlf: Bool
+  let groups: CaptureGroups
 
   public init(patterns: [String], options: MatcherOptions = MatcherOptions()) throws(RegexError) {
     let insensitive: Bool = switch options.caseMode {
@@ -40,24 +65,46 @@ public final class Matcher: Sendable {
 
     var flags = ParseFlags()
     flags.caseInsensitive = insensitive
+    flags.unicode = options.unicode
+    flags.crlf = options.crlf
+    flags.dotMatchesNewline = options.multiline && options.multilineDotAll
+    // Like ripgrep, which joins its patterns into one regex, capture groups
+    // are numbered across all patterns.
+    var groups = CaptureGroups()
     var nodes: [RegexNode] = []
     for pattern in patterns {
       if options.fixedStrings {
         nodes.append(Self.literalNode(pattern, caseInsensitive: insensitive))
       } else {
-        try nodes.append(Parser.parse(pattern, flags: flags))
+        try nodes.append(Parser.parse(pattern, flags: flags, groups: &groups))
       }
     }
     var node = nodes.count == 1 ? nodes[0] : .alternate(nodes)
+    if options.banNUL && !options.fixedStrings {
+      try PatternRestrictions.checkNoNUL(node)
+    }
     if options.lineRegexp {
-      node = .concat([.look(.startLine), .group(node), .look(.endLine)])
+      node = .concat([.look(options.crlf ? .startLineCRLF : .startLine), .group(node),
+                      .look(options.crlf ? .endLineCRLF : .endLine)])
     } else if options.wordRegexp {
       node = .concat([.look(.wordStartHalf), .group(node), .look(.wordEndHalf)])
     }
+    // A line-by-line search can't match the line terminator.
+    if !options.multiline {
+      if options.crlf {
+        node = try PatternRestrictions.strip(node, 13)
+      }
+      node = try PatternRestrictions.strip(node, options.lineTerminator)
+    }
+    terminator = options.multiline ? nil : options.lineTerminator
+    crlf = options.crlf
+    self.groups = groups
 
-    let compiled = try NFACompiler.compile(node, pattern: patterns.joined(separator: "|"))
+    let compiled = try NFACompiler.compile(node, pattern: patterns.joined(separator: "|"),
+                                           captures: options.captures && groups.count > 0)
     nfa = FlatNFA(compiled)
-    dfaProgram = DFAProgram(nfa: nfa)
+    dfaProgram = DFAProgram(nfa: nfa, terminator: terminator)
+    dfaCacheBytes = options.dfaSizeLimit
 
     let info = LiteralExtractor(foldASCII: insensitive).extract(node)
     if let exact = info.exact, info.precise,
@@ -73,6 +120,12 @@ public final class Matcher: Sendable {
     } else {
       prefilter = nil
       prefilterIsExact = false
+    }
+    // Like ripgrep, patterns that are just literals are searched without a
+    // regex, so the size limit doesn't apply to them.
+    if !prefilterIsExact, nfa.memoryUsage > options.sizeLimit {
+      throw RegexError(message: "compiled regex exceeds size limit of \(options.sizeLimit)", pattern: "", offset: nil,
+                       standalone: true)
     }
   }
 
@@ -91,6 +144,16 @@ public final class Matcher: Sendable {
   /// Makes the per-thread search state.
   public func makeLineMatcher() -> LineMatcher {
     LineMatcher(matcher: self)
+  }
+
+  /// The index of the capture group with this name, if any.
+  public func captureIndex(named name: String) -> Int? {
+    groups.names[name]
+  }
+
+  /// The number of capture groups, not counting the whole match.
+  public var captureCount: Int {
+    groups.count
   }
 
   static func literalNode(_ string: String, caseInsensitive: Bool) -> RegexNode {
@@ -135,10 +198,12 @@ public struct LineMatcher: ~Copyable {
   public let matcher: Matcher
   private var dfa: LazyDFA
   private var pike: PikeVM
+  /// Made when first needed (`--replace`).
+  private var captureVM: CaptureVM?
 
   init(matcher: Matcher) {
     self.matcher = matcher
-    dfa = LazyDFA(program: matcher.dfaProgram)
+    dfa = LazyDFA(program: matcher.dfaProgram, cacheBytes: matcher.dfaCacheBytes)
     pike = PikeVM(nfa: matcher.nfa)
   }
 
@@ -154,8 +219,8 @@ public struct LineMatcher: ~Copyable {
       var pos = from
       while pos < end {
         guard let hit = prefilter.find(hay, from: pos, to: end) else { return nil }
-        let line = Self.line(around: hit, in: hay, from: pos, end: end)
-        if matcher.prefilterIsExact || isMatch(hay, lineStart: line.lowerBound, lineEnd: line.upperBound) {
+        let line = line(around: hit, in: hay, from: pos, end: end)
+        if matcher.prefilterIsExact || isMatch(hay, lineStart: line.lowerBound, lineEnd: contentEnd(hay, line)) {
           return line
         }
         pos = line.upperBound + 1
@@ -168,10 +233,10 @@ public struct LineMatcher: ~Copyable {
       case .noMatch:
         return nil
       case let .match(at):
-        return Self.line(around: at, in: hay, from: pos, end: end)
+        return line(around: at, in: hay, from: pos, end: end)
       case let .quit(at):
-        let line = Self.line(around: at, in: hay, from: pos, end: end)
-        if pike.isMatch(in: hay, lineStart: line.lowerBound, lineEnd: line.upperBound) {
+        let line = line(around: at, in: hay, from: pos, end: end)
+        if pike.isMatch(in: hay, lineStart: line.lowerBound, lineEnd: contentEnd(hay, line)) {
           return line
         }
         pos = line.upperBound + 1
@@ -182,10 +247,20 @@ public struct LineMatcher: ~Copyable {
 
   /// The line (without its terminator) containing `position`, which lies in
   /// `[from, end]` with `from` at a line start.
-  private static func line(around position: Int, in hay: Span<UInt8>, from: Int, end: Int) -> Range<Int> {
-    let lineStart = hay.lastIndex(of: 10, in: from..<position).map { $0 + 1 } ?? from
-    let lineEnd = hay.firstIndex(of: 10, in: position..<end) ?? end
+  private func line(around position: Int, in hay: Span<UInt8>, from: Int, end: Int) -> Range<Int> {
+    let terminator = matcher.terminator ?? 10
+    let lineStart = hay.lastIndex(of: terminator, in: from..<position).map { $0 + 1 } ?? from
+    let lineEnd = hay.firstIndex(of: terminator, in: position..<end) ?? end
     return lineStart..<lineEnd
+  }
+
+  /// The end of the line's contents: in CRLF mode a `\r` before the
+  /// terminator isn't part of them.
+  private func contentEnd(_ hay: Span<UInt8>, _ line: Range<Int>) -> Int {
+    if matcher.crlf, line.upperBound > line.lowerBound, hay[line.upperBound - 1] == 13 {
+      return line.upperBound - 1
+    }
+    return line.upperBound
   }
 
   /// Whether the line `[lineStart, lineEnd)` contains a match.
@@ -202,6 +277,16 @@ public struct LineMatcher: ~Copyable {
   public mutating func findMatch(in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, from: Int) -> Range<Int>? {
     precondition(lineStart >= 0 && lineStart <= from && from <= lineEnd && lineEnd <= hay.count)
     return pike.find(in: hay, lineStart: lineStart, lineEnd: lineEnd, from: from)
+  }
+
+  /// The capture groups of `match` in the line `[lineStart, lineEnd)`
+  /// (group 0 is the match itself); nil for groups that didn't take part.
+  public mutating func captures(in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, match: Range<Int>) -> [Range<Int>?] {
+    guard matcher.groups.count > 0 else { return [match] }
+    if captureVM == nil {
+      captureVM = CaptureVM(nfa: matcher.nfa, groups: matcher.groups.count)
+    }
+    return captureVM!.captures(in: hay, lineStart: lineStart, lineEnd: lineEnd, start: match.lowerBound) ?? [match]
   }
 
   /// Calls `body` with each successive non-overlapping match in the line.

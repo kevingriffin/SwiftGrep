@@ -12,11 +12,23 @@ struct DFAProgram: Sendable {
   let usesWordLooks: Bool
   /// When the pattern has Unicode word boundaries, bytes >= 0x80 make the DFA give up.
   let quitOnNonASCII: Bool
+  /// The byte that ends lines (records), or nil when the whole text is
+  /// searched at once (`-U`).
+  let terminator: UInt8?
+  /// Whether states remember that the previous byte was `\r`, for CRLF
+  /// anchors.
+  let tracksCR: Bool
+  /// `\z` in CRLF mode would need two bytes of look-ahead at a `\r`, so the
+  /// DFA gives up there and the Pike VM decides.
+  let quitOnCR: Bool
 
-  init(nfa: FlatNFA) {
+  init(nfa: FlatNFA, terminator: UInt8?) {
     self.nfa = nfa
+    self.terminator = terminator
     usesWordLooks = nfa.looks.containsWordLook
     quitOnNonASCII = nfa.looks.containsUnicodeWordLook
+    tracksCR = nfa.looks.containsCRLFLook
+    quitOnCR = tracksCR && terminator != nil && nfa.looks.contains(.endText)
 
     var boundary = [Bool](repeating: false, count: 257)
     func mark(_ low: UInt8, _ high: UInt8) {
@@ -32,6 +44,10 @@ struct DFAProgram: Sendable {
       mark(e.low, e.high)
     }
     mark(10, 10)
+    mark(13, 13)
+    if let terminator {
+      mark(terminator, terminator)
+    }
     if usesWordLooks {
       mark(UInt8(ascii: "0"), UInt8(ascii: "9"))
       mark(UInt8(ascii: "A"), UInt8(ascii: "Z"))
@@ -84,8 +100,9 @@ struct LazyDFA: ~Copyable {
 
   private struct StateKey: Hashable {
     var states: [Int32]
-    var looks: UInt16
+    var looks: UInt32
     var fromWord: Bool
+    var fromCR: Bool
   }
 
   private struct StateInfo {
@@ -93,6 +110,7 @@ struct LazyDFA: ~Copyable {
     var setCount: Int
     var looks: LookSet
     var fromWord: Bool
+    var fromCR: Bool
     var hasLookStates: Bool
   }
 
@@ -131,11 +149,14 @@ struct LazyDFA: ~Copyable {
     infos.removeAll(keepingCapacity: true)
     setPool.removeAll(keepingCapacity: true)
     map.removeAll(keepingCapacity: true)
+    // A search starts at the start of a line (and of the text).
     var looks = LookSet()
     looks.insert(.startLine)
+    looks.insert(.startLineCRLF)
+    looks.insert(.startText)
     looks.bits &= program.nfa.looks.bits
     let set = closure(seeds: [program.nfa.unanchoredStart], looks: looks)
-    startState = intern(set, looks: looks, fromWord: false)
+    startState = intern(set, looks: looks, fromWord: false, fromCR: false)
   }
 
   /// Searches `[from, end)` for the earliest match. `from` must be at the
@@ -234,7 +255,7 @@ struct LazyDFA: ~Copyable {
       let info = infos[stateIndex]
       let set = Array(setPool[info.setStart..<(info.setStart + info.setCount)])
       resetCache()
-      sid = intern(set, looks: info.looks, fromWord: info.fromWord)
+      sid = intern(set, looks: info.looks, fromWord: info.fromWord, fromCR: info.fromCR)
       stateIndex = index(of: sid)
     }
     let info = infos[stateIndex]
@@ -243,16 +264,31 @@ struct LazyDFA: ~Copyable {
     let result: Int32
     if let byte, byte >= 0x80, program.quitOnNonASCII {
       result = Self.quit
+    } else if byte == 13 && program.quitOnCR {
+      result = Self.quit
     } else {
-      // Resolve look-ahead assertions at the current position.
+      // Resolve look-ahead assertions at the current position: the end of
+      // a line is before the terminator, before `\n` (multi-line), and in
+      // CRLF mode before `\r` but not between `\r` and `\n`.
       var lookNow = info.looks
-      if byte == nil || byte == 10 {
+      let atEnd = byte == nil || (byte != nil && byte == program.terminator)
+      if atEnd {
+        lookNow.insert(.endText)
+      }
+      if atEnd || byte == 10 {
         lookNow.insert(.endLine)
+      }
+      if byte == nil || byte == 13 || (byte == 10 && !info.fromCR) || (atEnd && byte != 10) {
+        lookNow.insert(.endLineCRLF)
+      }
+      // A `\r` starts a line in CRLF mode unless a `\n` follows.
+      if info.fromCR && byte != 10 {
+        lookNow.insert(.startLineCRLF)
       }
       if program.usesWordLooks {
         let nextIsWord = byte.map(WordChars.isASCIIWord) ?? false
         for look in Look.allCases where look.isWordLook && nfa.looks.contains(look) {
-          if look.holds(atLineStart: false, atLineEnd: false, previousIsWord: info.fromWord, nextIsWord: nextIsWord) {
+          if look.holds(previousIsWord: info.fromWord, nextIsWord: nextIsWord) {
             lookNow.insert(look)
           }
         }
@@ -274,13 +310,19 @@ struct LazyDFA: ~Copyable {
           }
         }
         var lookNext = LookSet()
-        if byte == 10 {
+        let afterTerminator = byte == program.terminator
+        if afterTerminator {
+          lookNext.insert(.startText)
+        }
+        if afterTerminator || byte == 10 {
           lookNext.insert(.startLine)
+          lookNext.insert(.startLineCRLF)
         }
         lookNext.bits &= nfa.looks.bits
         let fromWord = program.usesWordLooks && WordChars.isASCIIWord(byte)
+        let fromCR = program.tracksCR && byte == 13
         let nextSet = closure(seeds: scratchSet, looks: lookNext)
-        result = nextSet.isEmpty ? Self.dead : intern(nextSet, looks: lookNext, fromWord: fromWord)
+        result = nextSet.isEmpty ? Self.dead : intern(nextSet, looks: lookNext, fromWord: fromWord, fromCR: fromCR)
       } else {
         result = Self.dead
       }
@@ -318,6 +360,8 @@ struct LazyDFA: ~Copyable {
         if looks.contains(look) {
           stack.append(nfa.argB[index])
         }
+      case .capture:
+        stack.append(nfa.argB[index])
       case .fail:
         break
       default:
@@ -328,8 +372,8 @@ struct LazyDFA: ~Copyable {
     return result
   }
 
-  private mutating func intern(_ set: [Int32], looks: LookSet, fromWord: Bool) -> Int32 {
-    let key = StateKey(states: set, looks: looks.bits, fromWord: fromWord)
+  private mutating func intern(_ set: [Int32], looks: LookSet, fromWord: Bool, fromCR: Bool) -> Int32 {
+    let key = StateKey(states: set, looks: looks.bits, fromWord: fromWord, fromCR: fromCR)
     if let existing = map[key] {
       return existing
     }
@@ -340,7 +384,7 @@ struct LazyDFA: ~Copyable {
     table.append(copying: repeatElement(Self.unknown, count: stride))
     let nfa = program.nfa
     infos.append(StateInfo(
-      setStart: setPool.count, setCount: set.count, looks: looks, fromWord: fromWord,
+      setStart: setPool.count, setCount: set.count, looks: looks, fromWord: fromWord, fromCR: fromCR,
       hasLookStates: set.contains { nfa.kinds[Int($0)] == .look },
     ))
     setPool.append(contentsOf: set)

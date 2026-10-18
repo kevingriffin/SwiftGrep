@@ -41,7 +41,10 @@ struct Globs {
     #expect(matches("[!a]x", "bx"))
     #expect(!matches("[!a]x", "ax"))
     #expect(matches("*.[ch]", "x.h"))
-    #expect(matches("f?o", "fäo"))
+    // As in ripgrep's globs, `?` and classes match bytes, not characters.
+    #expect(!matches("f?o", "fäo"))
+    #expect(matches("f??o", "fäo"))
+    #expect(!matches("f[ä]o", "fäo"))
   }
 
   @Test func `case insensitive`() {
@@ -119,7 +122,7 @@ struct Arguments {
     let c = try parse(["-inC2", "foo", "dir"])
     #expect(c.matcher.caseMode == .insensitive)
     #expect(c.lineNumbers == true)
-    #expect(c.beforeContext == 2 && c.afterContext == 2)
+    #expect(c.context.before == 2 && c.context.after == 2)
     #expect(c.patterns == ["foo"])
     #expect(c.paths == ["dir"])
   }
@@ -154,16 +157,16 @@ struct Binary {
     }
     let nul = data.count
     data += [0, 10] + Array("foo\n".utf8)
-    let limit = BinaryDetection.searchableLength(data.span, nulOffset: nul)
+    let limit = LineBufferModel.searchableLength(data.span, nulOffset: nul)
     // The first 64 KiB chunk is searched up to its last complete line.
     #expect(limit > 0 && limit < nul)
     #expect(data[limit - 1] == 10)
-    #expect(limit <= BinaryDetection.bufferCapacity)
+    #expect(limit <= LineBufferModel.capacity)
   }
 
   @Test func `nul in first chunk skips everything`() {
     let data: [UInt8] = Array("foo\0bar\n".utf8)
-    let limit = BinaryDetection.searchableLength(data.span, nulOffset: 3)
+    let limit = LineBufferModel.searchableLength(data.span, nulOffset: 3)
     #expect(limit == 0)
   }
 }
