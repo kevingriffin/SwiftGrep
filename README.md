@@ -288,7 +288,13 @@ swift test                      # unit, consistency and end-to-end tests
 Scripts/compare.py [corpus]     # output parity with rg (default: ~/Developer/nixpkgs)
 Scripts/bench.py [corpus]       # timing against rg with hyperfine (the linux
                                 # suite is picked for a directory named linux)
+Scripts/compare_cli.py [corpus] # flag-by-flag behavior vs rg, piped and on a
+                                # terminal (default: ~/Developer/linux)
+Scripts/missing_flags.py        # rg flags sg doesn't recognize
 ```
+
+Remaining differences from ripgrep's command line are tracked in
+`CLI-COMPAT.md`.
 
 Requires Swift 6.4+ and macOS 27+ (`Span`, `InlineArray`, `Mutex`, and
 macOS 27's `UniqueArray`, byte-order-aware `RawSpan` loads and System
