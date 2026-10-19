@@ -1,15 +1,6 @@
 {
-  "originHash" : "0467c2f210415864708189db548c4b59c3e152ff06f5d784c3f9e461184c1f9c",
+  "originHash" : "5f5262482cfa7127963436f9db21e7415faef87eb7e2b31f3480efb7147755a0",
   "pins" : [
-    {
-      "identity" : "swift-binary-parsing",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-binary-parsing",
-      "state" : {
-        "revision" : "8f0f56a795e36eff6d532b01e8e94f640e3443dd",
-        "version" : "0.0.4"
-      }
-    },
     {
       "identity" : "swift-syntax",
       "kind" : "remoteSourceControl",

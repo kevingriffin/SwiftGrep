@@ -42,7 +42,7 @@ struct CaptureVM: ~Copyable {
       scratch[k] = -1
     }
     explore(nfa.start, intoCurrent: true, at: start, hay: hay, lineStart: lineStart, lineEnd: lineEnd)
-    var best: [Int]? = nil
+    var best: [Int]?
     var pos = start
     while current.count > 0 {
       next.clear()

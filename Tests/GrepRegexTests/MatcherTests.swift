@@ -25,6 +25,7 @@ func matches(_ pattern: String, _ line: String, options: MatcherOptions = Matche
   var result: [String] = []
   lineMatcher.forEachMatch(in: bytes.span, lineStart: 0, lineEnd: bytes.count) { m in
     result.append(String(decoding: bytes[m], as: UTF8.self))
+    return true
   }
   return result
 }
@@ -157,6 +158,46 @@ struct Spans {
   }
 }
 
+/// `-U`: searches that resume in the middle of the text.
+struct Multiline {
+  /// Successive matches across the whole text, as `-U` finds them.
+  func multilineMatches(_ pattern: String, _ text: String, dotAll: Bool = false) throws -> [String] {
+    var options = MatcherOptions()
+    options.multiline = true
+    options.multilineDotAll = dotAll
+    let matcher = try Matcher(patterns: [pattern], options: options)
+    var lineMatcher = matcher.makeLineMatcher()
+    let bytes = Array(text.utf8)
+    var result: [String] = []
+    var pos = 0
+    while pos <= bytes.count, let m = lineMatcher.findMultiline(in: bytes.span, from: pos, end: bytes.count) {
+      result.append(String(decoding: bytes[m], as: UTF8.self))
+      pos = m.isEmpty ? m.upperBound + 1 : m.upperBound
+    }
+    return result
+  }
+
+  @Test func `spans lines only when a match can`() throws {
+    #expect(try Matcher(patterns: ["a\\nb"], options: { var o = MatcherOptions(); o.multiline = true; return o }())
+      .isMultiline)
+    // `^` and `\A` count as matching `\n`, as in ripgrep.
+    #expect(try Matcher(patterns: ["^a"], options: { var o = MatcherOptions(); o.multiline = true; return o }())
+      .isMultiline)
+    #expect(try !Matcher(patterns: ["a.b"], options: { var o = MatcherOptions(); o.multiline = true; return o }())
+      .isMultiline)
+  }
+
+  /// The DFA's start state depends on the byte before the resume position.
+  @Test func `assertions see the text before the search position`() throws {
+    #expect(try multilineMatches(#"\Aab"#, "abab\n") == ["ab"])
+    #expect(try multilineMatches(#"b\z"#, "ab\nab") == ["b"])
+    #expect(try multilineMatches(#"\Bx\n?"#, "axx x\n") == ["x", "x"])
+    #expect(try multilineMatches(#"\bx\n?"#, "axx x\n") == ["x\n"])
+    #expect(try multilineMatches(#"^x\n"#, "x\nx\nyx\n") == ["x\n", "x\n"])
+    #expect(try multilineMatches(#"a.b"#, "a\nb", dotAll: true) == ["a\nb"])
+  }
+}
+
 struct Errors {
   @Test(arguments: ["(", "a)", "a{2,1}", #"\1"#, "[a", "*a", #"\p{Nope}"#, "(?=a)", "a\nb"])
   func rejects(_ pattern: String) {
@@ -170,6 +211,70 @@ struct Errors {
     } catch {
       #expect(error.message.contains("not allowed"))
     }
+  }
+
+  func message(_ patterns: [String]) -> String? {
+    do {
+      _ = try Matcher(patterns: patterns)
+      return nil
+    } catch {
+      return error.description
+    }
+  }
+
+  /// As in ripgrep, the patterns are parsed joined, and errors underline the
+  /// whole part of the joined pattern in error.
+  @Test func `errors show the joined pattern`() {
+    #expect(message(["x{2,1}"]) == "regex parse error:\n    (?:x{2,1})\n        ^^^^^\n"
+      + "error: invalid repetition count range, the start must be <= the end")
+    #expect(message(["a(", "b"]) == "regex parse error:\n    (?:a()|(?:b)\n    ^\nerror: unclosed group")
+    #expect(message(["(?<a>x)(?<a>y)"]) == "regex parse error:\n    (?:(?<a>x)(?<a>y))\n          ^      ^\n"
+      + "error: duplicate capture group name")
+    #expect(message(["\\p{Script=Nope}"]) == "regex parse error:\n    (?:\\p{Script=Nope})\n       ^^^^^^^^^^^^^^^\n"
+      + "error: Unicode property value not found")
+    // A pattern may close another's group.
+    #expect(message(["a)|(b"]) == nil)
+  }
+
+  @Test(arguments: ["(?ii)", "(?i-i)", "(?i-)", "(?--i)", "(?<1a>x)", "(?)", "[\\b]", "[\\d-z]"])
+  func `rejects like regex-syntax`(_ pattern: String) {
+    #expect(throws: RegexError.self) { _ = try Matcher(patterns: [pattern]) }
+  }
+
+  /// Counted repetitions are limited by the compiled size, not the count.
+  @Test func `size limit`() {
+    #expect(message(["a{1001}"]) == nil)
+    #expect(message(["a{4294967295}"]) == "compiled regex exceeds size limit of 104857600")
+  }
+}
+
+/// The Unicode data is regex-syntax's (Unicode 16.0), as ripgrep uses.
+struct UnicodeProperties {
+  @Test func `scripts categories and properties`() throws {
+    #expect(try matchingLines(#"\p{Greek}"#, "α\na\n") == ["α"])
+    #expect(try matchingLines(#"\p{sc=Grek}"#, "α\na\n") == ["α"])
+    #expect(try matchingLines(#"\p{scx:Greek}"#, "α\na\n") == ["α"])
+    #expect(try matchingLines(#"\P{Greek}"#, "α\na\n") == ["a"])
+    #expect(try matchingLines(#"\p{gc!=L}"#, "a\n1\n") == ["1"])
+    #expect(try matchingLines(#"\p{isLetter}"#, "a\n1\n") == ["a"])
+    #expect(try matchingLines(#"\p{Emoji_Presentation}"#, "😀\na\n") == ["😀"])
+    // Unicode 1.1 has no euro sign (2.1).
+    #expect(try matchingLines(#"\p{age=1.1}"#, "€\na\n") == ["a"])
+  }
+
+  @Test func `word characters come from Unicode 16`() throws {
+    // U+088F is new in Unicode 17, so not a word character for ripgrep.
+    #expect(try matchingLines(#"^\w$"#, "\u{88F}\nb\n") == ["b"])
+  }
+
+  /// Smart case looks at the syntax: only literals count.
+  @Test func `smart case`() throws {
+    var options = MatcherOptions()
+    options.caseMode = .smart
+    #expect(try matchingLines(#"\p{Lu}"#, "a\nA\n", options: options) == ["A"])
+    #expect(try matchingLines(#"\x41b"#, "ab\nAb\n", options: options) == ["Ab"])
+    #expect(try matchingLines(#"ab"#, "ab\nAB\n", options: options) == ["ab", "AB"])
+    #expect(try matchingLines(#"[A]b"#, "ab\nAb\n", options: options) == ["Ab"])
   }
 }
 
@@ -277,8 +382,10 @@ struct TeddyTests {
       let finder = TeddyFinder(needles: needles, fold: fold)
       let from = haystack.isEmpty ? 0 : Int.random(in: 0...min(3, haystack.count), using: &rng)
       do {
-        #expect(finder.find(haystack.span, from: from, to: haystack.count) == naive(needles, fold, haystack, from: from, to: haystack.count),
-                "needles \(needles.map { String(decoding: $0, as: UTF8.self) }) fold \(fold) in \(String(decoding: haystack, as: UTF8.self))")
+        let expected = naive(needles, fold, haystack, from: from, to: haystack.count)
+        let text = String(decoding: haystack, as: UTF8.self)
+        #expect(finder.find(haystack.span, from: from, to: haystack.count) == expected,
+                "needles \(needles.map { String(decoding: $0, as: UTF8.self) }) fold \(fold) in \(text)")
       }
     }
   }

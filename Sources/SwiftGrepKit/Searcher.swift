@@ -60,7 +60,7 @@ struct LineBufferModel {
   /// Reads the next buffer of complete lines from `data`, noticing a NUL
   /// byte at `nulOffset`.
   mutating func fill(_ data: Span<UInt8>, nulOffset: Int = .max) -> Fill {
-    var lastTerminator: Int? = nil
+    var lastTerminator: Int?
     while lastTerminator == nil {
       var free = capacity - (filled - consumed)
       if free <= 0 {
@@ -137,6 +137,8 @@ struct FileSearcher: ~Copyable {
   var ranges: [Range<Int>] = []
   /// A binary file's contents with NUL bytes turned into line terminators.
   private var converted = UniqueArray<UInt8>()
+  /// Text decoded from another encoding (`-E`, UTF-16 byte order marks).
+  private var transcoded: [UInt8] = []
 
   static let flushThreshold = 64 * 1024
 
@@ -184,6 +186,12 @@ struct FileSearcher: ~Copyable {
     var jsonBegun = false
     /// Escape sequences written for colors and hyperlinks.
     var escapeBytes = 0
+    /// `-U`: the file is searched as one text, and binary data is noticed
+    /// in each range reported.
+    var multiline = false
+    var binaryOffset: Int?
+    /// Binary data ends the search (files found while walking).
+    var binaryQuit = false
   }
 
   // MARK: - Files
@@ -196,22 +204,45 @@ struct FileSearcher: ~Copyable {
     if settings.stats {
       file.start = ContinuousClock.now
     }
-    // ripgrep decodes files after dropping a UTF-8 byte order mark, so
-    // offsets and columns count from the byte after it.
-    if settings.stripByteOrderMark, data.count >= 3, data[0] == 0xEF, data[1] == 0xBB, data[2] == 0xBF {
-      file.skippedByteOrderMark = true
-      run(data.extracting(3...), explicit: explicit)
+    // ripgrep decodes files after dropping a byte order mark, so offsets
+    // and columns count from the byte after it.
+    let (skip, encoding) = Encodings.plan(data, settings.encoding)
+    file.skippedByteOrderMark = skip > 0
+    if let encoding {
+      runDecoded(data.extracting(skip...), from: encoding, path: path, explicit: explicit)
     } else {
-      run(data, explicit: explicit)
+      run(data.extracting(skip...), explicit: explicit)
     }
     finishFile()
   }
 
+  /// Decodes the data to UTF-8, then searches it.
+  private mutating func runDecoded(_ data: Span<UInt8>, from encoding: TextEncoding, path: [UInt8], explicit: Bool) {
+    var text: [UInt8] = []
+    swap(&text, &transcoded)
+    text.removeAll(keepingCapacity: true)
+    if Encodings.decode(data, from: encoding, into: &text) {
+      // Decoded text is read in whole buffers, without the 3-byte peek.
+      file.skippedByteOrderMark = true
+      run(text.span, explicit: explicit)
+    } else {
+      shared.report(path, "the encoding given with -E is not available")
+    }
+    swap(&text, &transcoded)
+    if transcoded.capacity > 1 << 20 {
+      transcoded = []
+    }
+  }
+
   /// Searches the data and reports the file.
   private mutating func run(_ data: Span<UInt8>, explicit: Bool) {
+    if shared.matcher.isMultiline {
+      runMultiline(data, explicit: explicit)
+      return
+    }
     let n = data.count
     var limit = n
-    var binaryOffset: Int? = nil
+    var binaryOffset: Int?
     var convert = false
     if settings.binary != .text, n > 0, let nul = data.firstIndex(of: 0, in: 0..<n) {
       binaryOffset = nul
@@ -326,7 +357,7 @@ struct FileSearcher: ~Copyable {
 
   // MARK: - The line loop
 
-  private var exceededLimit: Bool {
+  var exceededLimit: Bool {
     settings.maxCount.map { file.count >= $0 } ?? false
   }
 
@@ -468,7 +499,7 @@ struct FileSearcher: ~Copyable {
   /// Reports pending after-context lines before `upto` (a line start).
   /// Past the `-m` limit, lines that match are reported as matches without
   /// counting toward it.
-  private mutating func afterContext(_ data: Span<UInt8>, upTo upto: Int, end: Int) -> Bool {
+  mutating func afterContext(_ data: Span<UInt8>, upTo upto: Int, end: Int) -> Bool {
     guard file.afterContextLeft > 0 else { return true }
     let exceeded = exceededLimit
     var p = file.lastLineVisited
@@ -492,7 +523,7 @@ struct FileSearcher: ~Copyable {
   }
 
   /// Reports up to `-B` lines before `upto` that weren't reported yet.
-  private mutating func beforeContext(_ data: Span<UInt8>, upTo upto: Int) -> Bool {
+  mutating func beforeContext(_ data: Span<UInt8>, upTo upto: Int) -> Bool {
     guard settings.before > 0, file.lastLineVisited < upto else { return true }
     var start = upto
     var lines = 0
@@ -512,7 +543,7 @@ struct FileSearcher: ~Copyable {
 
   /// Prints the context separator if lines were skipped since the last
   /// reported line.
-  private mutating func breakContext(at lineStart: Int) -> Bool {
+  mutating func breakContext(at lineStart: Int) -> Bool {
     guard settings.hasContext, file.hasSunk, file.lastLineVisited < lineStart else { return true }
     if settings.kind == .standard, let separator = settings.contextSeparator {
       out.append(separator)
@@ -521,7 +552,10 @@ struct FileSearcher: ~Copyable {
     return true
   }
 
-  private mutating func sinkMatched(_ data: Span<UInt8>, _ line: Range<Int>) -> Bool {
+  mutating func sinkMatched(_ data: Span<UInt8>, _ line: Range<Int>) -> Bool {
+    if file.multiline, checkBinary(data, line.lowerBound..<min(line.upperBound + 1, file.limit)) {
+      return false
+    }
     guard breakContext(at: line.lowerBound) else { return false }
     guard reportMatch(data, line) else { return false }
     file.lastLineVisited = line.upperBound + 1
@@ -530,7 +564,10 @@ struct FileSearcher: ~Copyable {
     return true
   }
 
-  private mutating func sinkContext(_ data: Span<UInt8>, _ line: Range<Int>, _ kind: LineKind) -> Bool {
+  mutating func sinkContext(_ data: Span<UInt8>, _ line: Range<Int>, _ kind: LineKind) -> Bool {
+    if file.multiline, checkBinary(data, line.lowerBound..<min(line.upperBound + 1, file.limit)) {
+      return false
+    }
     guard reportContext(data, line, kind) else { return false }
     file.lastLineVisited = line.upperBound + 1
     if kind == .after {
@@ -567,9 +604,8 @@ struct FileSearcher: ~Copyable {
       printJSON(data, line, .match)
     case .count, .countMatches, .pathWithMatch, .pathWithoutMatch, .quietWithMatch, .quietWithoutMatch:
       if settings.stats || settings.kind == .countMatches {
-        var count = 0
-        matcher.forEachMatch(in: data, lineStart: line.lowerBound, lineEnd: contentEnd(data, line)) { _ in count += 1 }
-        file.result.matches += max(count, 1)
+        findMatches(data, line)
+        file.result.matches += max(ranges.count, 1)
         file.result.matchedLines += 1
       } else if settings.kind.quitsEarly {
         return false
@@ -606,15 +642,18 @@ struct FileSearcher: ~Copyable {
     return true
   }
 
-  /// Collects the matches in the line into `ranges`, dropping an empty
-  /// match at its very end as ripgrep does.
+  /// Collects the matches in the line into `ranges`. As in ripgrep, an
+  /// empty match at the very end counts only if the line has a terminator.
   mutating func findMatches(_ data: Span<UInt8>, _ line: Range<Int>) {
     var found = ranges
     ranges = []
     found.removeAll(keepingCapacity: true)
     let end = contentEnd(data, line)
-    matcher.forEachMatch(in: data, lineStart: line.lowerBound, lineEnd: end) { found.append($0) }
-    if let last = found.last, last.isEmpty, last.lowerBound >= end {
+    matcher.forEachMatch(in: data, lineStart: line.lowerBound, lineEnd: end) {
+      found.append($0)
+      return true
+    }
+    if line.upperBound >= file.limit, let last = found.last, last.isEmpty, last.lowerBound >= end {
       found.removeLast()
     }
     ranges = found

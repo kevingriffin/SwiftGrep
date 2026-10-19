@@ -54,7 +54,7 @@ struct ByteSet: Hashable, Sendable {
   /// Members as maximal ranges.
   var ranges: [ClosedRange<UInt8>] {
     var result: [ClosedRange<UInt8>] = []
-    var start: Int? = nil
+    var start: Int?
     for b in 0...256 {
       let inSet = b < 256 && contains(UInt8(b))
       if inSet, start == nil {
@@ -91,6 +91,11 @@ struct LookSet: Hashable, Sendable {
 
   var containsCRLFLook: Bool {
     contains(.startLineCRLF) || contains(.endLineCRLF)
+  }
+
+  /// `^`, `$`, `\A` or `\z`, in any mode.
+  var containsLineLook: Bool {
+    Look.allCases.contains { $0.isLineLook && contains($0) }
   }
 
   var containsUnicodeWordLook: Bool {
@@ -136,7 +141,10 @@ struct NFA: Sendable {
 /// Compiles a `RegexNode` into an `NFA`.
 struct NFACompiler {
   private var nfa = NFA()
+  /// A bound on the states built, so a pattern like `a{4294967295}` fails
+  /// quickly; `Matcher` checks the real size limit afterwards.
   private let stateLimit: Int
+  private let sizeLimit: Int
   private let pattern: String
   /// Whether capture groups get states of their own (only `--replace`
   /// needs them).
@@ -144,14 +152,17 @@ struct NFACompiler {
   /// Caches compiled UTF-8 automata for large classes that appear many times.
   private var classCache: [ScalarSet: [UTF8Sequence]] = [:]
 
-  init(pattern: String, captures: Bool, stateLimit: Int = 2_000_000) {
+  init(pattern: String, captures: Bool, sizeLimit: Int) {
     self.pattern = pattern
     self.captures = captures
-    self.stateLimit = stateLimit
+    self.sizeLimit = sizeLimit
+    stateLimit = max(2_000_000, sizeLimit / 40)
   }
 
-  static func compile(_ node: RegexNode, pattern: String, captures: Bool = false) throws(RegexError) -> NFA {
-    var compiler = NFACompiler(pattern: pattern, captures: captures)
+  static func compile(
+    _ node: RegexNode, pattern: String, captures: Bool = false, sizeLimit: Int = 100 << 20,
+  ) throws(RegexError) -> NFA {
+    var compiler = NFACompiler(pattern: pattern, captures: captures, sizeLimit: sizeLimit)
     return try compiler.build(node)
   }
 
@@ -176,7 +187,8 @@ struct NFACompiler {
 
   private func checkSize() throws(RegexError) {
     if nfa.states.count > stateLimit {
-      throw RegexError(message: "compiled regex exceeds size limit", pattern: pattern, offset: nil)
+      throw RegexError(message: "compiled regex exceeds size limit of \(sizeLimit)", pattern: pattern, span: nil,
+                       standalone: true)
     }
   }
 

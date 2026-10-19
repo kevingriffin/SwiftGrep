@@ -55,6 +55,9 @@ Scripts/bench.py [corpus]       # timing against rg with hyperfine (the linux
 Scripts/compare_cli.py [corpus] # flag-by-flag behavior vs rg, piped and on a
                                 # terminal (default: ~/Developer/linux)
 Scripts/missing_flags.py        # rg flags sg doesn't recognize
+swiftformat . --lint && swiftlint lint   # style (or: nix run nixpkgs#swiftlint -- lint)
+Scripts/generate_unicode_tables.py DIR   # UnicodeTables.swift from regex-syntax's unicode_tables
+Scripts/generate_encodings.py DIR        # EncodingTables.swift from encoding_rs's src
 ```
 
 

@@ -61,6 +61,7 @@ public enum SwiftGrep {
     let isTerminal = isatty(output) != 0
     let types = try TypeMatcher(config.typeChanges)
     let overrides = try makeOverrides(config)
+    let commands = try FileCommands(config)
 
     // Like ripgrep, a search that can't match isn't run at all.
     let searching = config.mode != .listFiles
@@ -115,7 +116,7 @@ public enum SwiftGrep {
 
     // Files are separated by a blank line under --heading, and by the
     // context separator when context is shown.
-    var fileSeparator: [UInt8]? = nil
+    var fileSeparator: [UInt8]?
     if config.mode == .lines {
       if settings.heading {
         fileSeparator = []
@@ -147,7 +148,7 @@ public enum SwiftGrep {
       settings: settings, matcher: matcher, walk: walk, overrides: overrides, types: types, sink: sink,
       queue: WorkQueue(jobs), flushEachFile: lineBuffered, separateFiles: fileSeparator != nil,
       sortOutput: config.sort != nil, quitAfterMatch: config.quiet && !config.stats, messages: config.messages,
-      ignoreMessages: config.messages && config.ignoreMessages, implicitPath: implicitPath,
+      ignoreMessages: config.messages && config.ignoreMessages, implicitPath: implicitPath, commands: commands,
     )
 
     if config.debug {
@@ -166,13 +167,20 @@ public enum SwiftGrep {
     if let sort = config.sort {
       sink.finishSorted(by: sort)
     }
-    for case let .directory(root) in jobs {
-      root.cache?.save()
+    for case let .directory(job) in jobs {
+      job.root.cache?.save()
     }
 
     let totals = run.totals.withLock { $0 }
     if settings.stats && searching {
-      writeStatistics(totals, json: config.mode == .json, total: Clock.now - start, to: FileDescriptor(rawValue: output))
+      let text = statistics(totals, json: config.mode == .json, total: Clock.now - start)
+      // Like ripgrep's parallel output, the statistics follow the file
+      // separator; sorted (single-threaded in ripgrep) output has none.
+      if config.sort == nil {
+        sink.writeFile(text.storage.span)
+      } else {
+        sink.write(text.storage.span)
+      }
     }
 
     let matched = run.matched.load(ordering: .relaxed)
@@ -218,7 +226,7 @@ public enum SwiftGrep {
   }
 
   /// The `--stats` summary, after a blank line (or a JSON `summary`).
-  static func writeStatistics(_ totals: SearchTotals, json: Bool, total: Duration, to fd: FileDescriptor) {
+  static func statistics(_ totals: SearchTotals, json: Bool, total: Duration) -> OutputBuffer {
     var out = OutputBuffer(capacity: 1024)
     if json {
       out.append("{\"data\":{\"elapsed_total\":")
@@ -249,7 +257,7 @@ public enum SwiftGrep {
       out.append(SecondsFormat.sixDecimals(nanoseconds: totals.nanoseconds) + " seconds spent searching\n")
       out.append(SecondsFormat.sixDecimals(nanoseconds: total.nanoseconds) + " seconds total\n")
     }
-    try? OS.writeAll(fd, out.storage.span)
+    return out
   }
 
   static func isReadableStandardInput() -> Bool {
@@ -306,14 +314,14 @@ public enum SwiftGrep {
     if let resolved = OS.realpath(openPath) {
       absolute = Array(resolved.utf8)
     }
-    var level: IgnoreLevel? = nil
+    var level: IgnoreLevel?
     if walk.useIgnoreFiles && !config.noIgnoreParent {
       level = parentLevels(of: absolute, context: walk.ignore)
     }
     let cache = config.useCache ? ListingCache(root: absolute) : nil
     let device = config.oneFileSystem ? (try? Stat(FilePath(openPath)))?.deviceID.rawValue ?? 0 : 0
-    return DirectoryJob(displayPath: display, absolutePath: absolute, depth: 0, ignore: level, ancestors: [], cache: cache,
-                        rootDevice: device)
+    return DirectoryJob(displayPath: display, absolutePath: absolute, depth: 0, ignore: level, ancestors: [],
+                        root: SearchRoot(cache: cache, device: device))
   }
 
   /// Ignore levels for every ancestor of `path`, outermost first.
@@ -327,7 +335,7 @@ public enum SwiftGrep {
         break
       }
     }
-    var level: IgnoreLevel? = nil
+    var level: IgnoreLevel?
     for directory in ancestors.reversed() {
       let base = directory == [UInt8(ascii: "/")] ? "" : String(decoding: directory, as: UTF8.self)
       func rules(_ name: String) -> IgnoreRules? {

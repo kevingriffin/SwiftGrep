@@ -27,7 +27,7 @@ struct PikeVM: ~Copyable {
     in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, from: Int,
   ) -> Range<Int>? {
     current.clear()
-    var matched: Range<Int>? = nil
+    var matched: Range<Int>?
     var pos = from
     while true {
       if matched == nil {

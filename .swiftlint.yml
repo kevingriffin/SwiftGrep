@@ -1,0 +1,40 @@
+# SwiftLint, matched to the house style (CLAUDE.md). SwiftFormat
+# (.swiftformat) owns layout, so the rules that disagree with it are off.
+included:
+  - Sources
+  - Tests
+  - Scripts
+  - Package.swift
+excluded:
+  - .build
+  # Generated tables.
+  - Sources/GrepRegex/UnicodeTables.swift
+  - Sources/SwiftGrepKit/EncodingTables.swift
+
+disabled_rules:
+  # Layout is SwiftFormat's: trailing commas, and braces on their own line
+  # after wrapped conditions.
+  - trailing_comma
+  - opening_brace
+  # The engines use short conventional names (i, n, b, cp, fd).
+  - identifier_name
+  # Its suggested replacement for String(decoding:as:) needs Foundation.
+  - optional_data_string_conversion
+  # Matchers and parsers are single-pass state machines kept in one
+  # function for speed, so size metrics don't fit them.
+  - cyclomatic_complexity
+  - function_body_length
+  - function_parameter_count
+  - type_body_length
+  - file_length
+  - large_tuple
+  # "Whitelist" is ripgrep's (and gitignore's) term for a negated rule.
+  - inclusive_language
+
+type_name:
+  min_length: 2
+
+line_length:
+  warning: 140
+  ignores_comments: true
+  ignores_urls: true

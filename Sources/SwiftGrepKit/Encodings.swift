@@ -1,42 +1,214 @@
-/// Character encodings ripgrep knows by name (`-E`).
-enum Encodings {
-  /// The WHATWG labels that encoding_rs accepts, except those of its
-  /// "replacement" encoding, which ripgrep rejects.
-  static let labels: Set<String> = [
-    "866", "ansi_x3.4-1968", "arabic", "ascii", "asmo-708", "big5", "big5-hkscs", "chinese", "cn-big5",
-    "cp1250", "cp1251", "cp1252", "cp1253", "cp1254", "cp1255", "cp1256", "cp1257", "cp1258", "cp819", "cp866",
-    "csbig5", "cseuckr", "cseucpkdfmtjapanese", "csgb2312", "csibm866", "csiso2022jp", "csiso58gb231280",
-    "csiso88596e", "csiso88596i", "csiso88598e", "csiso88598i", "csisolatin1", "csisolatin2", "csisolatin3",
-    "csisolatin4", "csisolatin5", "csisolatin6", "csisolatin9", "csisolatinarabic", "csisolatincyrillic",
-    "csisolatingreek", "csisolatinhebrew", "cskoi8r", "csksc56011987", "csmacintosh", "csshiftjis", "csunicode",
-    "cyrillic", "dos-874", "ecma-114", "ecma-118", "elot_928", "euc-jp", "euc-kr", "gb18030", "gb2312",
-    "gb_2312", "gb_2312-80", "gbk", "greek", "greek8", "hebrew", "ibm819", "ibm866", "iso-10646-ucs-2",
-    "iso-2022-jp", "iso-8859-1", "iso-8859-10", "iso-8859-11", "iso-8859-13", "iso-8859-14", "iso-8859-15",
-    "iso-8859-16", "iso-8859-2", "iso-8859-3", "iso-8859-4", "iso-8859-5", "iso-8859-6", "iso-8859-6-e",
-    "iso-8859-6-i", "iso-8859-7", "iso-8859-8", "iso-8859-8-e", "iso-8859-8-i", "iso-8859-9", "iso-ir-100",
-    "iso-ir-101", "iso-ir-109", "iso-ir-110", "iso-ir-126", "iso-ir-127", "iso-ir-138", "iso-ir-144",
-    "iso-ir-148", "iso-ir-149", "iso-ir-157", "iso-ir-58", "iso8859-1", "iso8859-10", "iso8859-11",
-    "iso8859-13", "iso8859-14", "iso8859-15", "iso8859-2", "iso8859-3", "iso8859-4", "iso8859-5", "iso8859-6",
-    "iso8859-7", "iso8859-8", "iso8859-9", "iso88591", "iso885910", "iso885911", "iso885913", "iso885914",
-    "iso885915", "iso88592", "iso88593", "iso88594", "iso88595", "iso88596", "iso88597", "iso88598", "iso88599",
-    "iso_8859-1", "iso_8859-15", "iso_8859-1:1987", "iso_8859-2", "iso_8859-2:1987", "iso_8859-3",
-    "iso_8859-3:1988", "iso_8859-4", "iso_8859-4:1988", "iso_8859-5", "iso_8859-5:1988", "iso_8859-6",
-    "iso_8859-6:1987", "iso_8859-7", "iso_8859-7:1987", "iso_8859-8", "iso_8859-8:1988", "iso_8859-9",
-    "iso_8859-9:1989", "koi", "koi8", "koi8-r", "koi8-ru", "koi8-u", "koi8_r", "korean", "ks_c_5601-1987",
-    "ks_c_5601-1989", "ksc5601", "ksc_5601", "l1", "l2", "l3", "l4", "l5", "l6", "l9", "latin1", "latin2",
-    "latin3", "latin4", "latin5", "latin6", "logical", "mac", "macintosh", "ms932", "ms_kanji", "shift-jis",
-    "shift_jis", "sjis", "sun_eu_greek", "tis-620", "ucs-2", "unicode", "unicode-1-1-utf-8", "unicode11utf8",
-    "unicode20utf8", "unicodefeff", "unicodefffe", "us-ascii", "utf-16", "utf-16be", "utf-16le", "utf-8",
-    "utf8", "visual", "windows-1250", "windows-1251", "windows-1252", "windows-1253", "windows-1254",
-    "windows-1255", "windows-1256", "windows-1257", "windows-1258", "windows-31j", "windows-874", "windows-949",
-    "x-cp1250", "x-cp1251", "x-cp1252", "x-cp1253", "x-cp1254", "x-cp1255", "x-cp1256", "x-cp1257", "x-cp1258",
-    "x-euc-jp", "x-gbk", "x-mac-cyrillic", "x-mac-roman", "x-mac-ukrainian", "x-sjis", "x-unicode20utf8",
-    "x-user-defined", "x-x-big5",
-  ]
+/// An encoding that ripgrep (encoding_rs) decodes to UTF-8 before searching.
+public enum TextEncoding: Sendable, Hashable {
+  case utf8, utf16LE, utf16BE
+  /// x-user-defined: bytes 0x80 to 0xFF are U+F780 to U+F7FF.
+  case userDefined
+  /// A single-byte encoding, by its index in `Encodings.singleByteTables`.
+  case singleByte(Int)
+  case gbk, gb18030, big5, eucJP, iso2022JP, shiftJIS, eucKR
+}
 
-  /// Whether ripgrep would accept `label` (surrounding ASCII whitespace is
+/// `-E`: how file contents are decoded before searching.
+public enum EncodingMode: Sendable, Hashable {
+  /// The default: a UTF-16 byte order mark selects UTF-16, and a UTF-8 one
+  /// is skipped.
+  case auto
+  /// A UTF-16 byte order mark still takes precedence.
+  case some(TextEncoding)
+  /// `-E none`: the bytes are searched as they are.
+  case disabled
+}
+
+/// Character encodings, decoded like ripgrep's `DecodeReaderBytes` with the
+/// WHATWG decoders of encoding_rs: malformed input becomes U+FFFD. The
+/// labels and single-byte tables are in `EncodingTables.swift`.
+enum Encodings {
+  /// The encoding a WHATWG label names (surrounding ASCII whitespace is
   /// ignored and letters are compared without case).
-  static func isKnown(_ label: String) -> Bool {
-    labels.contains(label.trimmingCharacters(in: " \t\n\u{0C}\r").lowercased())
+  static func encoding(forLabel label: String) -> TextEncoding? {
+    byLabel[label.trimmingCharacters(in: " \t\n\u{0C}\r").lowercased()]
+  }
+
+  /// What ripgrep does with a file's bytes: skips `skip` bytes of byte
+  /// order marks, and decodes the rest from `encoding`, or searches it as it
+  /// is when that's nil.
+  static func plan(_ data: Span<UInt8>, _ mode: EncodingMode) -> (skip: Int, encoding: TextEncoding?) {
+    var encoding: TextEncoding?
+    switch mode {
+    case .disabled: return (0, nil)
+    case .auto: encoding = nil
+    case let .some(explicit): encoding = explicit
+    }
+    var skip = 0
+    switch byteOrderMark(data, at: 0) {
+    case let (.utf8, length)?:
+      // A UTF-8 byte order mark is dropped, but doesn't override `-E`.
+      skip = length
+    case let (marked, length)?:
+      (skip, encoding) = (length, marked)
+    case nil:
+      break
+    }
+    // Decoders also drop a byte order mark of their own encoding.
+    if let encoding, let (own, length) = byteOrderMark(data, at: skip), own == encoding {
+      skip += length
+    }
+    return (skip, encoding)
+  }
+
+  /// The byte order mark at `offset`, if any: its encoding and length.
+  private static func byteOrderMark(_ data: Span<UInt8>, at offset: Int) -> (TextEncoding, Int)? {
+    let left = data.count - offset
+    guard left >= 2 else { return nil }
+    switch (data[offset], data[offset + 1]) {
+    case (0xEF, 0xBB) where left >= 3 && data[offset + 2] == 0xBF: return (.utf8, 3)
+    case (0xFF, 0xFE): return (.utf16LE, 2)
+    case (0xFE, 0xFF): return (.utf16BE, 2)
+    default: return nil
+    }
+  }
+
+  /// Decodes `data` to UTF-8, appending to `output`. Returns false if the
+  /// encoding isn't available (the CJK encodings come from the system's
+  /// iconv).
+  static func decode(_ data: Span<UInt8>, from encoding: TextEncoding, into output: inout [UInt8]) -> Bool {
+    output.reserveCapacity(output.count + data.count + data.count / 2)
+    switch encoding {
+    case .utf8: decodeUTF8(data, into: &output)
+    case .utf16LE: decodeUTF16(data, bigEndian: false, into: &output)
+    case .utf16BE: decodeUTF16(data, bigEndian: true, into: &output)
+    case .userDefined:
+      for i in data.indices {
+        let byte = data[i]
+        if byte < 0x80 {
+          output.append(byte)
+        } else {
+          appendUTF8(0xF780 + UInt32(byte - 0x80), to: &output)
+        }
+      }
+    case let .singleByte(table):
+      let base = table * 128
+      for i in data.indices {
+        let byte = data[i]
+        if byte < 0x80 {
+          output.append(byte)
+        } else {
+          let scalar = singleByteTables[base + Int(byte - 0x80)]
+          appendUTF8(scalar == 0 ? 0xFFFD : UInt32(scalar), to: &output)
+        }
+      }
+    // iconv's closest matches to the WHATWG definitions.
+    case .gbk, .gb18030: return OS.convert(data, from: "GB18030", appendingTo: &output)
+    case .big5: return OS.convert(data, from: "BIG5-HKSCS", appendingTo: &output)
+    case .eucJP: return OS.convert(data, from: "EUC-JP", appendingTo: &output)
+    case .iso2022JP: return OS.convert(data, from: "ISO-2022-JP", appendingTo: &output)
+    case .shiftJIS: return OS.convert(data, from: "CP932", appendingTo: &output)
+    case .eucKR: return OS.convert(data, from: "CP949", appendingTo: &output)
+    }
+    return true
+  }
+
+  /// The WHATWG UTF-8 decoder: each maximal invalid subsequence becomes one
+  /// U+FFFD. Valid sequences are copied as they are.
+  private static func decodeUTF8(_ data: Span<UInt8>, into output: inout [UInt8]) {
+    var i = 0
+    let n = data.count
+    while i < n {
+      let byte = data[i]
+      if byte < 0x80 {
+        output.append(byte)
+        i += 1
+        continue
+      }
+      var needed = 0
+      var lower: UInt8 = 0x80
+      var upper: UInt8 = 0xBF
+      switch byte {
+      case 0xC2...0xDF: needed = 1
+      case 0xE0...0xEF:
+        needed = 2
+        if byte == 0xE0 {
+          lower = 0xA0
+        }
+        if byte == 0xED {
+          upper = 0x9F
+        }
+      case 0xF0...0xF4:
+        needed = 3
+        if byte == 0xF0 {
+          lower = 0x90
+        }
+        if byte == 0xF4 {
+          upper = 0x8F
+        }
+      default:
+        appendUTF8(0xFFFD, to: &output)
+        i += 1
+        continue
+      }
+      var j = i + 1
+      var seen = 0
+      while seen < needed, j < n, data[j] >= lower, data[j] <= upper {
+        (lower, upper) = (0x80, 0xBF)
+        seen += 1
+        j += 1
+      }
+      if seen == needed {
+        for k in i..<j {
+          output.append(data[k])
+        }
+      } else {
+        // The byte that broke the sequence starts the next one.
+        appendUTF8(0xFFFD, to: &output)
+      }
+      i = j
+    }
+  }
+
+  /// The WHATWG UTF-16 decoder: unpaired surrogates and a final odd byte
+  /// become U+FFFD.
+  private static func decodeUTF16(_ data: Span<UInt8>, bigEndian: Bool, into output: inout [UInt8]) {
+    var lead: UInt32?
+    var i = 0
+    while i + 1 < data.count {
+      let (a, b) = (UInt32(data[i]), UInt32(data[i + 1]))
+      let unit = bigEndian ? a << 8 | b : b << 8 | a
+      i += 2
+      if let high = lead {
+        lead = nil
+        if (0xDC00...0xDFFF).contains(unit) {
+          appendUTF8(0x10000 + (high - 0xD800) << 10 + (unit - 0xDC00), to: &output)
+          continue
+        }
+        appendUTF8(0xFFFD, to: &output)
+      }
+      switch unit {
+      case 0xD800...0xDBFF: lead = unit
+      case 0xDC00...0xDFFF: appendUTF8(0xFFFD, to: &output)
+      default: appendUTF8(unit, to: &output)
+      }
+    }
+    if lead != nil || i < data.count {
+      appendUTF8(0xFFFD, to: &output)
+    }
+  }
+
+  private static func appendUTF8(_ scalar: UInt32, to output: inout [UInt8]) {
+    switch scalar {
+    case 0..<0x80:
+      output.append(UInt8(scalar))
+    case 0x80..<0x800:
+      output.append(UInt8(0xC0 | scalar >> 6))
+      output.append(UInt8(0x80 | scalar & 0x3F))
+    case 0x800..<0x10000:
+      output.append(UInt8(0xE0 | scalar >> 12))
+      output.append(UInt8(0x80 | scalar >> 6 & 0x3F))
+      output.append(UInt8(0x80 | scalar & 0x3F))
+    default:
+      output.append(UInt8(0xF0 | scalar >> 18))
+      output.append(UInt8(0x80 | scalar >> 12 & 0x3F))
+      output.append(UInt8(0x80 | scalar >> 6 & 0x3F))
+      output.append(UInt8(0x80 | scalar & 0x3F))
+    }
   }
 }

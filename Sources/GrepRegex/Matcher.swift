@@ -56,30 +56,39 @@ public final class Matcher: Sendable {
   let groups: CaptureGroups
 
   public init(patterns: [String], options: MatcherOptions = MatcherOptions()) throws(RegexError) {
-    let insensitive: Bool = switch options.caseMode {
-    case .sensitive: false
-    case .insensitive: true
-    case .smart: !patterns.contains(where: Self.hasUppercaseLiteral)
-    }
-    isCaseInsensitive = insensitive
-
     var flags = ParseFlags()
-    flags.caseInsensitive = insensitive
+    flags.caseInsensitive = options.caseMode == .insensitive
     flags.unicode = options.unicode
     flags.crlf = options.crlf
     flags.dotMatchesNewline = options.multiline && options.multilineDotAll
-    // Like ripgrep, which joins its patterns into one regex, capture groups
-    // are numbered across all patterns.
     var groups = CaptureGroups()
-    var nodes: [RegexNode] = []
-    for pattern in patterns {
-      if options.fixedStrings {
-        nodes.append(Self.literalNode(pattern, caseInsensitive: insensitive))
-      } else {
-        try nodes.append(Parser.parse(pattern, flags: flags, groups: &groups))
+    var node: RegexNode
+    var insensitive = flags.caseInsensitive
+    if options.fixedStrings {
+      // Smart case: every character is a literal.
+      if options.caseMode == .smart {
+        let scalars = patterns.lazy.flatMap(\.unicodeScalars)
+        insensitive = !scalars.isEmpty && !scalars.contains { UnicodeClasses.isUppercase($0.value) }
+      }
+      let nodes = patterns.map { Self.literalNode($0, caseInsensitive: insensitive) }
+      node = nodes.count == 1 ? nodes[0] : .alternate(nodes)
+    } else {
+      // Like ripgrep, parse the patterns as one regex, `(?:p1)|(?:p2)`: a
+      // pattern may close another's group, capture groups are numbered
+      // across all of them, and errors show the joined pattern.
+      let joined = patterns.map { "(?:" + $0 + ")" }.joined(separator: "|")
+      var literals = Parser.LiteralAnalysis()
+      node = try Parser.parse(joined, flags: flags, groups: &groups, literals: &literals)
+      // Smart case, as ripgrep decides it from the syntax tree: insensitive
+      // if there's a literal and none is uppercase.
+      if options.caseMode == .smart, literals.any, !literals.uppercase {
+        insensitive = true
+        flags.caseInsensitive = true
+        groups = CaptureGroups()
+        node = try Parser.parse(joined, flags: flags, groups: &groups, literals: &literals)
       }
     }
-    var node = nodes.count == 1 ? nodes[0] : .alternate(nodes)
+    isCaseInsensitive = insensitive
     if options.banNUL && !options.fixedStrings {
       try PatternRestrictions.checkNoNUL(node)
     }
@@ -96,13 +105,17 @@ public final class Matcher: Sendable {
       }
       node = try PatternRestrictions.strip(node, options.lineTerminator)
     }
-    terminator = options.multiline ? nil : options.lineTerminator
     crlf = options.crlf
     self.groups = groups
 
     let compiled = try NFACompiler.compile(node, pattern: patterns.joined(separator: "|"),
-                                           captures: options.captures && groups.count > 0)
+                                           captures: options.captures && groups.count > 0, sizeLimit: options.sizeLimit)
     nfa = FlatNFA(compiled)
+    // Like ripgrep, `-U` only searches across lines if a match can contain
+    // the line terminator; otherwise lines are searched one by one. Line
+    // anchors count as containing `\n`, as they do in ripgrep.
+    let acrossLines = nfa.canMatch(options.lineTerminator) || options.lineTerminator == 10 && nfa.looks.containsLineLook
+    terminator = options.multiline && acrossLines ? nil : options.lineTerminator
     dfaProgram = DFAProgram(nfa: nfa, terminator: terminator)
     dfaCacheBytes = options.dfaSizeLimit
 
@@ -124,7 +137,7 @@ public final class Matcher: Sendable {
     // Like ripgrep, patterns that are just literals are searched without a
     // regex, so the size limit doesn't apply to them.
     if !prefilterIsExact, nfa.memoryUsage > options.sizeLimit {
-      throw RegexError(message: "compiled regex exceeds size limit of \(options.sizeLimit)", pattern: "", offset: nil,
+      throw RegexError(message: "compiled regex exceeds size limit of \(options.sizeLimit)", pattern: "", span: nil,
                        standalone: true)
     }
   }
@@ -156,6 +169,12 @@ public final class Matcher: Sendable {
     groups.count
   }
 
+  /// Whether matches can span lines (`-U` with a pattern that can match the
+  /// line terminator).
+  public var isMultiline: Bool {
+    terminator == nil
+  }
+
   static func literalNode(_ string: String, caseInsensitive: Bool) -> RegexNode {
     let chars = string.unicodeScalars.map { scalar -> RegexNode in
       if caseInsensitive && CaseFolding.hasCase(scalar.value) {
@@ -164,31 +183,6 @@ public final class Matcher: Sendable {
       return .char(scalar.value)
     }
     return chars.count == 1 ? chars[0] : .concat(chars)
-  }
-
-  /// Smart case: does the pattern contain an uppercase literal character?
-  /// Escape sequences such as `\S` or `\W` are not literals and don't count.
-  static func hasUppercaseLiteral(_ pattern: String) -> Bool {
-    let chars = Array(pattern.unicodeScalars)
-    var i = 0
-    while i < chars.count {
-      let c = chars[i]
-      if c == "\\" {
-        i += 2
-        // Skip braced arguments like \p{Greek} or \x{41}.
-        if i < chars.count, chars[i] == "{" {
-          while i < chars.count, chars[i] != "}" {
-            i += 1
-          }
-        }
-        continue
-      }
-      if c.properties.isUppercase {
-        return true
-      }
-      i += 1
-    }
-    return false
   }
 }
 
@@ -272,6 +266,21 @@ public struct LineMatcher: ~Copyable {
     }
   }
 
+  /// The leftmost-first match in `hay[from..<end]`, which is searched as a
+  /// text of its own (as ripgrep does with `-U`, so `\A` and `^` match at
+  /// `from`). The lazy DFA first checks that a match exists.
+  public mutating func findMultiline(in hay: Span<UInt8>, from: Int, end: Int) -> Range<Int>? {
+    precondition(matcher.isMultiline && from >= 0 && from <= end && end <= hay.count)
+    // Every match contains one of the prefilter's literals.
+    if let prefilter = matcher.prefilter, prefilter.find(hay, from: from, to: end) == nil {
+      return nil
+    }
+    if case .noMatch = dfa.findEarliest(inText: hay, from: from, end: end) {
+      return nil
+    }
+    return pike.find(in: hay, lineStart: 0, lineEnd: end, from: from)
+  }
+
   /// The leftmost-first match in the line `[lineStart, lineEnd)` that starts
   /// at or after `from`.
   public mutating func findMatch(in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, from: Int) -> Range<Int>? {
@@ -291,21 +300,23 @@ public struct LineMatcher: ~Copyable {
 
   /// Calls `body` with each successive non-overlapping match in the line.
   public mutating func forEachMatch(
-    in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, _ body: (Range<Int>) -> Void,
+    in hay: Span<UInt8>, lineStart: Int, lineEnd: Int, from: Int? = nil, _ body: (Range<Int>) -> Bool,
   ) {
     precondition(lineStart >= 0 && lineStart <= lineEnd && lineEnd <= hay.count)
-    var at = lineStart
+    var at = from ?? lineStart
     var lastEnd = -1
     while at <= lineEnd {
       guard let m = pike.find(in: hay, lineStart: lineStart, lineEnd: lineEnd, from: at) else { return }
       if m.isEmpty {
         // An empty match right after the previous match is not reported.
-        if m.lowerBound != lastEnd {
-          body(m)
+        if m.lowerBound != lastEnd, !body(m) {
+          return
         }
-        at = m.upperBound + (m.upperBound < lineEnd ? UTF8Decoding.characterLength(hay, at: m.upperBound, end: lineEnd) : 1)
+        // Like ripgrep's regex (with `utf8_empty` off), the next search
+        // starts one byte later, even inside a UTF-8 sequence.
+        at = m.upperBound + 1
       } else {
-        body(m)
+        guard body(m) else { return }
         at = m.upperBound
       }
       lastEnd = m.upperBound

@@ -127,6 +127,9 @@ struct LazyDFA: ~Copyable {
   private var setPool: [Int32] = []
   private var map: [StateKey: Int32] = [:]
   private var startState: Int32 = 0
+  /// `-U` start states in the middle of the text, after `\n`, after `\r`,
+  /// after a word byte and after any other byte.
+  private var contextStartStates = InlineArray<4, Int32>(repeating: unknown)
   private var visited: SparseSet
   private var stack: [Int32] = []
   private var scratchSet: [Int32] = []
@@ -157,14 +160,54 @@ struct LazyDFA: ~Copyable {
     looks.bits &= program.nfa.looks.bits
     let set = closure(seeds: [program.nfa.unanchoredStart], looks: looks)
     startState = intern(set, looks: looks, fromWord: false, fromCR: false)
+    for k in contextStartStates.indices {
+      contextStartStates[k] = Self.unknown
+    }
   }
 
   /// Searches `[from, end)` for the earliest match. `from` must be at the
   /// start of a line, and `end` at the end of a line or of the haystack.
   mutating func findEarliest(_ hay: Span<UInt8>, from: Int, end: Int) -> DFAResult {
+    search(hay, from: from, end: end, start: startState)
+  }
+
+  /// `-U`: searches `[from, end)` of a text that starts at 0, so the
+  /// assertions at `from` depend on the byte before it.
+  mutating func findEarliest(inText hay: Span<UInt8>, from: Int, end: Int) -> DFAResult {
+    guard from > 0 else { return search(hay, from: from, end: end, start: startState) }
+    guard let start = startState(after: hay[from - 1]) else { return .quit(at: from) }
+    return search(hay, from: from, end: end, start: start)
+  }
+
+  /// The start state after `byte`, as `computeTransition` would step to it
+  /// in a DFA without a line terminator; nil if the DFA can't tell (a
+  /// Unicode word boundary after non-ASCII).
+  private mutating func startState(after byte: UInt8) -> Int32? {
+    precondition(program.terminator == nil)
+    if byte >= 0x80 && program.quitOnNonASCII {
+      return nil
+    }
+    let fromWord = program.usesWordLooks && WordChars.isASCIIWord(byte)
+    let fromCR = program.tracksCR && byte == 13
+    let kind = byte == 10 ? 0 : fromCR ? 1 : fromWord ? 2 : 3
+    if contextStartStates[kind] == Self.unknown {
+      var looks = LookSet()
+      if byte == 10 {
+        looks.insert(.startLine)
+        looks.insert(.startLineCRLF)
+      }
+      looks.bits &= program.nfa.looks.bits
+      let set = closure(seeds: [program.nfa.unanchoredStart], looks: looks)
+      contextStartStates[kind] = intern(set, looks: looks, fromWord: fromWord, fromCR: fromCR)
+    }
+    return contextStartStates[kind]
+  }
+
+  @inline(__always)
+  private mutating func search(_ hay: Span<UInt8>, from: Int, end: Int, start: Int32) -> DFAResult {
     precondition(from >= 0 && end <= hay.count)
     clearsThisSearch = 0
-    var sid = startState
+    var sid = start
     var i = from
     let eoiClass = program.classCount
     while true {

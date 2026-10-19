@@ -83,7 +83,7 @@ extension FileSearcher {
   }
 
   /// The heading (path line) before a file's first line, with `--heading`.
-  private mutating func writeHeadingIfNeeded() {
+  mutating func writeHeadingIfNeeded() {
     guard out.count == file.outputStart, settings.heading, settings.withFilename else { return }
     let linked = openLink(line: nil, column: nil)
     appendColoredPath()
@@ -102,7 +102,12 @@ extension FileSearcher {
   private mutating func writePrelude(
     _ data: Span<UInt8>, _ line: Range<Int>, offset: Int, column: Int?, _ kind: LineKind,
   ) {
-    let lineNumber = settings.lineNumbers ? lineNumber(at: line.lowerBound, data) : nil
+    writePrelude(number: settings.lineNumbers ? lineNumber(at: line.lowerBound, data) : nil, offset: offset,
+                 column: column, kind)
+  }
+
+  /// The prelude with the line number given (nil when line numbers are off).
+  mutating func writePrelude(number lineNumber: Int?, offset: Int, column: Int?, _ kind: LineKind) {
     var pending = PendingSeparator.none
     var linked = false
     if settings.withFilename, settings.hyperlinks.isLineDependent || !settings.heading {
@@ -151,12 +156,13 @@ extension FileSearcher {
   }
 
   /// Writes a line (`bytes` includes its terminator, if any) uncolored.
-  private mutating func writeLine(
+  mutating func writeLine(
     _ data: Span<UInt8>, _ bytes: Range<Int>, matches: [Range<Int>], _ kind: LineKind, original: Int? = nil,
   ) {
     let line = settings.trim ? trimmedPrefix(data, bytes) : bytes
     if exceedsMaxColumns(line.count) {
-      writeExceeded(data, line, matches: matches, kind, original: original ?? matches.count)
+      var index = 0
+      writeExceeded(data, line, matches: matches, kind, original: original ?? matches.count, index: &index)
     } else {
       out.append(data.extracting(line))
       if line.isEmpty || data[line.upperBound - 1] != settings.lineTerminator {
@@ -173,10 +179,11 @@ extension FileSearcher {
       return
     }
     let line = settings.trim ? trimmedPrefix(data, bytes) : bytes
+    var index = 0
     if exceedsMaxColumns(bytes.count) {
-      writeExceeded(data, line, matches: matches, kind, original: original ?? matches.count)
+      writeExceeded(data, line, matches: matches, kind, original: original ?? matches.count, index: &index)
     } else {
-      writeColoredMatches(data, line, matches: matches, kind)
+      writeColoredMatches(data, line, matches: matches, kind, index: &index)
       out.append(settings.lineTerminatorBytes)
     }
   }
@@ -184,7 +191,11 @@ extension FileSearcher {
   /// Writes the line's contents with its matches colored. As in ripgrep,
   /// adjacent matches share one colored run, and with a highlight style the
   /// rest of a matching line is drawn in it.
-  private mutating func writeColoredMatches(_ data: Span<UInt8>, _ bytes: Range<Int>, matches: [Range<Int>], _ kind: LineKind) {
+  /// `index` is the first match to consider; a match spanning lines (`-U`)
+  /// continues on the next one.
+  mutating func writeColoredMatches(
+    _ data: Span<UInt8>, _ bytes: Range<Int>, matches: [Range<Int>], _ kind: LineKind, index: inout Int,
+  ) {
     var line = trimmedTerminator(data, bytes)
     guard !matches.isEmpty else {
       out.append(data.extracting(line))
@@ -195,7 +206,6 @@ extension FileSearcher {
       appendEscape(highlight)
     }
     var inMatch = false
-    var index = 0
     while !line.isEmpty {
       let match = matches[index]
       if match.upperBound <= line.lowerBound {
@@ -234,19 +244,19 @@ extension FileSearcher {
     inMatch = false
   }
 
-  private func exceedsMaxColumns(_ length: Int) -> Bool {
+  func exceedsMaxColumns(_ length: Int) -> Bool {
     settings.maxColumns.map { length > $0 } ?? false
   }
 
   /// A line longer than `--max-columns`: a placeholder, or with
   /// `--max-columns-preview` its first graphemes.
-  private mutating func writeExceeded(
-    _ data: Span<UInt8>, _ line: Range<Int>, matches: [Range<Int>], _ kind: LineKind, original: Int,
+  mutating func writeExceeded(
+    _ data: Span<UInt8>, _ line: Range<Int>, matches: [Range<Int>], _ kind: LineKind, original: Int, index: inout Int,
   ) {
     if settings.maxColumnsPreview {
       let end = Graphemes.end(of: data, line, count: settings.maxColumns ?? 0)
       let shown = line.lowerBound..<end
-      writeColoredMatches(data, shown, matches: matches, kind)
+      writeColoredMatches(data, shown, matches: matches, kind, index: &index)
       if matches.isEmpty {
         out.append(" [... omitted end of long line]")
       } else {
@@ -266,7 +276,7 @@ extension FileSearcher {
   }
 
   /// `--trim`: drops leading ASCII whitespace that isn't the terminator.
-  private func trimmedPrefix(_ data: Span<UInt8>, _ bytes: Range<Int>) -> Range<Int> {
+  func trimmedPrefix(_ data: Span<UInt8>, _ bytes: Range<Int>) -> Range<Int> {
     var start = bytes.lowerBound
     while start < bytes.upperBound {
       let byte = data[start]
@@ -277,7 +287,7 @@ extension FileSearcher {
     return start..<bytes.upperBound
   }
 
-  private func trimmedTerminator(_ data: Span<UInt8>, _ bytes: Range<Int>) -> Range<Int> {
+  func trimmedTerminator(_ data: Span<UInt8>, _ bytes: Range<Int>) -> Range<Int> {
     guard !bytes.isEmpty, data[bytes.upperBound - 1] == settings.lineTerminator else { return bytes }
     var end = bytes.upperBound - 1
     if settings.crlf, end > bytes.lowerBound, data[end - 1] == 13 {

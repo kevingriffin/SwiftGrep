@@ -51,6 +51,18 @@ struct Globs {
     let glob = Glob(Array("*.MD".utf8), anchored: false, caseInsensitive: true)
     #expect(glob.matches(Array("README.md".utf8)))
   }
+
+  @Test func alternatives() {
+    #expect(matches("*.{c,h}", "a/x.h"))
+    #expect(!matches("*.{c,h}", "x.cc"))
+    #expect(matches("{a,{b,c}}x", "cx"))
+    // As in globset, empty alternatives are dropped.
+    #expect(!matches("x{,y}", "x"))
+    #expect(matches("x{,y}", "xy"))
+    #expect(throws: Glob.ParseError.self) {
+      try Glob(parsing: Array("*.{c".utf8), anchored: false, caseInsensitive: false)
+    }
+  }
 }
 
 struct GitignoreRules {
@@ -147,6 +159,73 @@ struct Arguments {
   }
 }
 
+struct Encoding {
+  func decode(_ bytes: [UInt8], _ encoding: TextEncoding) -> String {
+    var output: [UInt8] = []
+    #expect(Encodings.decode(bytes.span, from: encoding, into: &output))
+    return String(decoding: output, as: UTF8.self)
+  }
+
+  func plan(_ bytes: [UInt8], _ mode: EncodingMode) -> (Int, TextEncoding?) {
+    Encodings.plan(bytes.span, mode)
+  }
+
+  @Test func `utf-16 surrogates and odd bytes`() {
+    #expect(decode([0x3D, 0xD8, 0x00, 0xDE, 0x41, 0x00], .utf16LE) == "😀A")
+    // An unpaired lead surrogate, a lone trail surrogate and a final odd byte.
+    #expect(decode([0x3D, 0xD8, 0x41, 0x00, 0x00, 0xDE, 0x42], .utf16LE) == "\u{FFFD}A\u{FFFD}\u{FFFD}")
+    #expect(decode([0x00, 0x41], .utf16BE) == "A")
+  }
+
+  @Test func `invalid utf-8 becomes replacement characters`() {
+    #expect(decode([0x61, 0xFF, 0x62], .utf8) == "a\u{FFFD}b")
+    // Each maximal invalid subsequence is one error: E0 must be followed by
+    // A0...BF, and a truncated sequence ends at the byte that breaks it.
+    #expect(decode([0xE0, 0x80, 0x7A], .utf8) == "\u{FFFD}\u{FFFD}z")
+    #expect(decode([0xF0, 0x9F, 0x98, 0x68], .utf8) == "\u{FFFD}h")
+    #expect(decode([0xED, 0xA0, 0x80], .utf8) == "\u{FFFD}\u{FFFD}\u{FFFD}")
+  }
+
+  @Test func `labels and single-byte encodings`() throws {
+    let latin1 = try #require(Encodings.encoding(forLabel: " Latin1 "))
+    // WHATWG maps latin1 to windows-1252.
+    #expect(decode([0x80, 0x41], latin1) == "€A")
+    #expect(Encodings.encoding(forLabel: "csunicode") == .utf16LE)
+    #expect(Encodings.encoding(forLabel: "replacement") == nil)
+    let iso88593 = try #require(Encodings.encoding(forLabel: "iso-8859-3"))
+    #expect(decode([0xA5], iso88593) == "\u{FFFD}")
+  }
+
+  @Test func `cjk encodings through iconv`() {
+    #expect(decode([0x93, 0xFA, 0x96, 0x7B], .shiftJIS) == "日本")
+    #expect(decode([0x93, 0xFA, 0x96], .shiftJIS) == "日\u{FFFD}")
+  }
+
+  @Test func `byte order marks`() {
+    #expect(plan([0xFF, 0xFE, 0x41, 0], .auto) == (2, .utf16LE))
+    #expect(plan([0xEF, 0xBB, 0xBF, 0x41], .auto) == (3, nil))
+    #expect(plan([0xFF, 0xFE, 0x41, 0], .disabled) == (0, nil))
+    // A UTF-16 byte order mark overrides -E; a UTF-8 one is only dropped.
+    #expect(plan([0xFE, 0xFF, 0, 0x41], .some(.utf8)) == (2, .utf16BE))
+    #expect(plan([0xEF, 0xBB, 0xBF, 0x41], .some(.utf16LE)) == (3, .utf16LE))
+    // The decoder drops a second byte order mark of its own encoding.
+    #expect(plan([0xFF, 0xFE, 0xFF, 0xFE, 0x41, 0], .auto) == (4, .utf16LE))
+    #expect(plan([0xEF, 0xBB, 0xBF, 0xEF, 0xBB, 0xBF], .auto) == (3, nil))
+  }
+}
+
+struct Generated {
+  @Test func `every flag is in the man page and completions`() {
+    for kind in [GenerateKind.man, .bash, .zsh, .fish, .powershell] {
+      let text = Generator.output(kind)
+      for flag in Flag.declared where !flag.isHidden {
+        let long = kind == .man ? "\\-\\-" + flag.long.split(separator: "-").joined(separator: "\\-") : flag.long
+        #expect(text.contains(long), "\(kind) lacks --\(flag.long)")
+      }
+    }
+  }
+}
+
 struct Binary {
   /// The same 64 KiB buffer refill logic, step by step over a byte array.
   @Test func `searchable length matches ripgrep buffering`() {
@@ -186,6 +265,41 @@ struct Hardening {
     let long = Glob(Array(String(repeating: "*x", count: 2000).utf8), anchored: true)
     #expect(long.matches(Array(String(repeating: "x", count: 3000).utf8)))
     #expect(!long.matches(Array(String(repeating: "x", count: 1999).utf8)))
+  }
+
+  /// Alternate groups nest with an explicit stack and a limit, so a hostile
+  /// ignore file can't exhaust the stack.
+  @Test func `glob nesting is limited`() throws {
+    let deep = String(repeating: "{a,", count: 10000) + "b" + String(repeating: "}", count: 10000)
+    #expect(throws: Glob.ParseError.self) {
+      try Glob(parsing: Array(deep.utf8), anchored: false, caseInsensitive: false)
+    }
+    let shallow = String(repeating: "{a,", count: 60) + "b" + String(repeating: "}", count: 60)
+    let glob = try Glob(parsing: Array(shallow.utf8), anchored: false, caseInsensitive: false)
+    #expect(glob.matches(Array("b".utf8)))
+    // In an ignore file, the bad line is reported and the others still apply.
+    var errors: [String] = []
+    let rules = IgnoreRules(gitignore: Array(("x\n" + deep + "\ny\n").utf8), errors: &errors)
+    #expect(errors.count == 1)
+    #expect(rules.match(Array("y".utf8).span, nameStart: 0, isDirectory: false) == .ignore)
+  }
+
+  /// Lengths and offsets read from a cache file or `getattrlistbulk` are
+  /// untrusted: going past the reader's range must throw, not trap.
+  @Test func `byte reader stays in bounds`() throws {
+    let bytes: [UInt8] = [0xFE, 0xFF, 0xFF, 0xFF, 1, 2, 3]
+    let span = bytes.span
+    var input = ByteReader(span)
+    #expect(try input.read(Int32.self, from: span) == -2)
+    var field = try input.take(2)
+    #expect(try field.read(UInt16.self, from: span) == 0x0201)
+    #expect(throws: ByteReader.Malformed.self) { try field.read(UInt8.self, from: span) }
+    #expect(throws: ByteReader.Malformed.self) { try input.read(UInt16.self, from: span) }
+    #expect(throws: ByteReader.Malformed.self) { try input.skip(-1) }
+    #expect(throws: ByteReader.Malformed.self) { try ByteReader(span, from: 8) }
+    #expect(throws: ByteReader.Malformed.self) { try ByteReader(span, from: -1) }
+    #expect(throws: ByteReader.Malformed.self) { try ByteReader(5..<8, in: span) }
+    #expect(try input.read(UInt8.self, from: span) == 3)
   }
 
   @Test func `directory names must be plain`() {
@@ -228,6 +342,10 @@ struct Ordering {
   }
 
   func write(_ relative: String, _ contents: String) throws {
+    try write(relative, bytes: Array(contents.utf8))
+  }
+
+  func write(_ relative: String, bytes contents: [UInt8]) throws {
     let path = root + "/" + relative
     // Create parent directories one component at a time.
     _ = path.split(separator: "/").dropLast().reduce("") { partial, component in
@@ -238,8 +356,7 @@ struct Ordering {
     let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
     guard fd >= 0 else { throw UsageError("cannot create \(path)") }
     defer { close(fd) }
-    var copy = contents
-    copy.withUTF8 { _ = Darwin.write(fd, $0.baseAddress, $0.count) }
+    contents.withUnsafeBufferPointer { _ = Darwin.write(fd, $0.baseAddress, $0.count) }
   }
 
   func run(_ args: [String]) async -> (status: Int32, lines: [String]) {
@@ -303,6 +420,58 @@ struct Ordering {
     let result = await run(["--sort", "path", "-n", "foo", root + "/repo"])
     #expect(result.lines.count == 3)
   }
+
+  @Test func `utf-16 files are decoded`() async throws {
+    let text = "foo bar\nbaz foo\n".utf16.flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] }
+    try write("enc/u16.txt", bytes: [0xFF, 0xFE] + text)
+    let path = root + "/enc/u16.txt"
+    #expect(await run(["-n", "-b", "foo", path]).lines == ["1:0:foo bar", "2:8:baz foo"])
+    #expect(await run(["-E", "none", "-c", "foo", path]).status == 1)
+  }
+
+  @Test func `multi-line matches`() async throws {
+    try write("ml/a.txt", "one\ntwo\nthree\nfour\n")
+    let path = root + "/ml/a.txt"
+    #expect(await run(["-U", "-n", "two\\nthree", path]).lines == ["2:two", "3:three"])
+    // Counts are of matches, as in ripgrep, though adjacent lines are one block.
+    #expect(await run(["-U", "-c", "o\\n|e\\n", path]).lines == ["3"])
+    #expect(await run(["-U", "-c", "\\Atwo", path]).status == 1)
+  }
+
+  @Test func `preprocessors and replacements`() async throws {
+    try write("pre/a.txt", "foo\n")
+    let path = root + "/pre/a.txt"
+    #expect(await run(["--pre", "cat", "foo", path]).lines == ["foo"])
+    #expect(await run(["--pre", "false", "foo", path]).status == 2)
+    #expect(await run(["-r", "[$0]", "-o", "fo+", path]).lines == ["[foo]"])
+  }
+
+  @Test func `ignore files given on the command line`() async throws {
+    try write("ign/a.txt", "foo\n")
+    try write("ign/b.txt", "foo\n")
+    try write("rules", "a.txt\n")
+    let args = ["-l", "--ignore-file", root + "/rules", "foo", root + "/ign"]
+    #expect(await run(args).lines == [root + "/ign/b.txt"])
+    // Ignore files in the tree take precedence.
+    try write("ign/.ignore", "!a.txt\n")
+    #expect(await run(args).lines == [root + "/ign/a.txt", root + "/ign/b.txt"])
+  }
+
+  @Test func `configuration file`() throws {
+    try write("config/rc", "# flags before the command line\n\n--context=2\n-i\n")
+    let path = root + "/config/rc"
+    let command = try ArgumentParser.parse(["-s", "foo"]) { $0 == "RIPGREP_CONFIG_PATH" ? path : nil }
+    guard case let .search(config) = command else {
+      Issue.record("expected a search")
+      return
+    }
+    #expect(config.matcher.caseMode == .sensitive)
+    guard case let .limited(_, _, both) = config.context else {
+      Issue.record("expected limited context")
+      return
+    }
+    #expect(both == 2)
+  }
 }
 
 struct ListingCacheTests {
@@ -318,14 +487,14 @@ struct ListingCacheTests {
 
   /// Reads `directory` the way the walker does: from the cache if valid,
   /// otherwise from the file system (recording the fresh listing).
-  func list(_ directory: String, cache: ListingCache) -> (names: [String], cached: Bool) {
-    let info = try! Stat(FilePath(directory))
+  func list(_ directory: String, cache: ListingCache) throws -> (names: [String], cached: Bool) {
+    let info = try Stat(FilePath(directory))
     let key = ListingCache.Key(info)
     var listing = DirectoryListing()
     let cached = cache.load(key, stamp: ListingCache.Stamp(info), into: &listing)
     if !cached {
-      let file = try! OS.open(directory, .readOnly, .directory)
-      try! listing.read(directory: file.descriptor)
+      let file = try OS.open(directory, .readOnly, .directory)
+      try listing.read(directory: file.descriptor)
       cache.record(key, stamp: ListingCache.Stamp(info), listing: listing)
     }
     let names = listing.entries.map { String(decoding: listing.nameBytes(of: $0), as: UTF8.self) }.sorted()
@@ -340,23 +509,23 @@ struct ListingCacheTests {
     let root = Array(tree.utf8)
 
     var cache = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
-    #expect(list(tree, cache: cache) == (["a", "b"], false))
+    #expect(try list(tree, cache: cache) == (["a", "b"], false))
     cache.save()
 
     // A new process sees the saved listing without reading the directory.
     cache = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
-    #expect(list(tree, cache: cache) == (["a", "b"], true))
+    #expect(try list(tree, cache: cache) == (["a", "b"], true))
 
     // Adding an entry changes the directory's mtime, so the cache is bypassed.
     touch(tree + "/c")
-    #expect(list(tree, cache: cache) == (["a", "b", "c"], false))
+    #expect(try list(tree, cache: cache) == (["a", "b", "c"], false))
     cache.save()
     cache = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
-    #expect(list(tree, cache: cache) == (["a", "b", "c"], true))
+    #expect(try list(tree, cache: cache) == (["a", "b", "c"], true))
 
     // So does removing one.
     unlink(tree + "/a")
-    #expect(list(tree, cache: cache) == (["b", "c"], false))
+    #expect(try list(tree, cache: cache) == (["b", "c"], false))
   }
 
   @Test func `remembers large files`() throws {
@@ -368,14 +537,15 @@ struct ListingCacheTests {
     close(fd)
     let root = Array(tree.utf8)
     let cache = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
-    _ = list(tree, cache: cache)
+    _ = try list(tree, cache: cache)
     cache.save()
 
     let reopened = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
     let info = try Stat(FilePath(tree))
     var listing = DirectoryListing()
     #expect(reopened.load(ListingCache.Key(info), stamp: ListingCache.Stamp(info), into: &listing))
-    let large = listing.entries.map { (String(decoding: listing.nameBytes(of: $0), as: UTF8.self), $0.isLarge, $0.size) }.sorted { $0.0 < $1.0 }
+    let large = listing.entries.map { (String(decoding: listing.nameBytes(of: $0), as: UTF8.self), $0.isLarge, $0.size) }
+      .sorted { $0.0 < $1.0 }
     #expect(large.map(\.0) == ["large", "small"])
     #expect(large.map(\.1) == [true, false])
     #expect(large.allSatisfy { $0.2 == -1 }) // cached sizes are never trusted
@@ -387,7 +557,7 @@ struct ListingCacheTests {
     touch(tree + "/a")
     let root = Array(tree.utf8)
     let cache = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
-    _ = list(tree, cache: cache)
+    _ = try list(tree, cache: cache)
     cache.save()
     let original = try FileIO.readWholeFile(path: cache.path)
 
@@ -403,7 +573,7 @@ struct ListingCacheTests {
       _ = damaged.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
       close(fd)
       let reopened = try #require(ListingCache(root: root, directory: cacheDirectory, quietPeriod: 0))
-      let names = list(tree, cache: reopened).names
+      let names = try list(tree, cache: reopened).names
       #expect(names == ["a"] || names == [], "a damaged cache must give the real listing or none")
     }
   }
@@ -430,9 +600,9 @@ struct ListingCacheTests {
     let tree = makeTemporaryDirectory()
     touch(tree + "/x")
     let cache = try #require(ListingCache(root: Array(tree.utf8), directory: cacheDirectory, quietPeriod: 60))
-    _ = list(tree, cache: cache)
+    _ = try list(tree, cache: cache)
     cache.save()
     let reopened = try #require(ListingCache(root: Array(tree.utf8), directory: cacheDirectory, quietPeriod: 60))
-    #expect(list(tree, cache: reopened).cached == false)
+    #expect(try list(tree, cache: reopened).cached == false)
   }
 }

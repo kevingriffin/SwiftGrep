@@ -219,7 +219,7 @@ struct LiteralExtractor {
   }
 
   static func best(of candidates: [[[UInt8]]]) -> [[UInt8]]? {
-    var best: [[UInt8]]? = nil
+    var best: [[UInt8]]?
     var bestCost = Float.infinity
     for c in candidates {
       let cost = cost(of: c)

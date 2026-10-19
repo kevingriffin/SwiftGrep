@@ -1,4 +1,3 @@
-import BinaryParsing
 import Darwin
 import System
 
@@ -104,9 +103,10 @@ struct DirectoryListing: ~Copyable {
         return
       }
       do {
-        var input = ParserSpan(bulk.span.bytes)
+        let bytes = bulk.span
+        var input = ByteReader(bytes)
         for _ in 0..<count {
-          try Self.parseEntry(&input, names: &names, entries: &entries)
+          try Self.parseEntry(&input, in: bytes, names: &names, entries: &entries)
         }
       } catch {
         throw .ioError
@@ -117,40 +117,42 @@ struct DirectoryListing: ~Copyable {
   /// Parses one entry: its length (u32, including itself), the returned
   /// attribute groups (5 × u32), then the requested attributes in order.
   private static func parseEntry(
-    _ input: inout ParserSpan, names: inout UniqueArray<UInt8>, entries: inout [DirectoryEntry],
-  ) throws(ParsingError) {
-    let length = try Int(parsing: &input, storedAsLittleEndian: UInt32.self)
-    var entry = try input.sliceSpan(byteCount: length - 4)
-    let common = try UInt32(parsingLittleEndian: &entry)
-    try entry.seek(toRelativeOffset: 8) // volume and directory attributes
-    let fileAttributes = try UInt32(parsingLittleEndian: &entry)
-    try entry.seek(toRelativeOffset: 4) // fork attributes
+    _ input: inout ByteReader, in bytes: Span<UInt8>, names: inout UniqueArray<UInt8>,
+    entries: inout [DirectoryEntry],
+  ) throws(ByteReader.Malformed) {
+    let length = try Int(input.read(UInt32.self, from: bytes))
+    var entry = try input.take(length - 4)
+    let common = try entry.read(UInt32.self, from: bytes)
+    try entry.skip(8) // volume and directory attributes
+    let fileAttributes = try entry.read(UInt32.self, from: bytes)
+    try entry.skip(4) // fork attributes
     var failed = false
     if common & UInt32(ATTR_CMN_ERROR) != 0 {
-      failed = try UInt32(parsingLittleEndian: &entry) != 0
+      failed = try entry.read(UInt32.self, from: bytes) != 0
     }
-    var name: ParserSpan? = nil
+    var name: Range<Int>?
     if common & UInt32(ATTR_CMN_NAME) != 0 {
       // An attrreference_t: the name's offset from the reference itself,
       // and its length including the NUL. The name must lie in this entry.
-      let offset = try Int(parsing: &entry, storedAsLittleEndian: Int32.self)
-      let length = try Int(parsing: &entry, storedAsLittleEndian: UInt32.self)
-      var data = try entry.seeking(toRelativeOffset: offset - 8)
-      name = try data.sliceSpan(byteCount: length - 1)
+      let offset = try Int(entry.read(Int32.self, from: bytes))
+      let length = try Int(entry.read(UInt32.self, from: bytes))
+      var data = entry
+      try data.skip(offset - 8)
+      name = try data.take(length - 1).range
     }
     var kind = EntryKind.other
     if common & UInt32(ATTR_CMN_OBJTYPE) != 0 {
-      kind = try EntryKind(vnodeType: UInt32(parsingLittleEndian: &entry))
+      kind = try EntryKind(vnodeType: entry.read(UInt32.self, from: bytes))
     }
     var size: Int64 = -1
     if fileAttributes & UInt32(ATTR_FILE_DATALENGTH) != 0 {
-      size = try Int64(parsingLittleEndian: &entry)
+      size = try entry.read(Int64.self, from: bytes)
     }
     if !failed, let name {
-      let bytes = Span<UInt8>(viewing: name.bytes)
-      if isPlainName(bytes) {
-        entries.append(DirectoryEntry(nameOffset: names.count, nameLength: bytes.count, kind: kind, size: size))
-        names.append(copying: bytes)
+      let name = bytes.extracting(name)
+      if isPlainName(name) {
+        entries.append(DirectoryEntry(nameOffset: names.count, nameLength: name.count, kind: kind, size: size))
+        names.append(copying: name)
         names.append(0)
       }
     }

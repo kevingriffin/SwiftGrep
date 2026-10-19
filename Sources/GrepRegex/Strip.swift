@@ -55,7 +55,7 @@ enum PatternRestrictions {
     }
     return RegexError(message: "the literal \"\(name)\" is not allowed in a regex\n\n"
       + "Consider enabling multiline mode with the --multiline flag (or -U for short).\n"
-      + "When multiline mode is enabled, new line characters can be matched.", pattern: "", offset: nil, standalone: true)
+      + "When multiline mode is enabled, new line characters can be matched.", pattern: "", span: nil, standalone: true)
   }
 
   /// ripgrep's ban on patterns that need a NUL byte, which binary detection
@@ -93,13 +93,17 @@ enum PatternRestrictions {
   private static let banned = RegexError(
     message: "pattern contains \"\\0\" but it is impossible to match\n\nConsider enabling text mode with the --text flag "
       + "(or -a for short). Otherwise,\nbinary detection is enabled and matching a NUL byte is impossible.",
-    pattern: "", offset: nil, standalone: true,
+    pattern: "", span: nil, standalone: true,
   )
 
-  /// The union of the alternatives if each is a single character or class.
+  /// The union of the alternatives if each is a single character or class
+  /// (non-capturing groups don't count, as ripgrep's syntax drops them).
   private static func singleCharacters(_ nodes: [RegexNode]) -> ScalarSet? {
     var union = ScalarSet()
-    for node in nodes {
+    for var node in nodes {
+      while case let .group(inner) = node {
+        node = inner
+      }
       switch node {
       case let .char(c): union.insert(c...c)
       case let .set(set): union.formUnion(set)

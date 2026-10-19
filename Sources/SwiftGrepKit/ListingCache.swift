@@ -1,4 +1,3 @@
-import BinaryParsing
 import Darwin
 import Synchronization
 import System
@@ -60,11 +59,11 @@ final class ListingCache: Sendable {
       changedNanoseconds = info.st_ctim.tv_nsec
     }
 
-    init(parsing input: inout ParserSpan) throws(ParsingError) {
-      modifiedSeconds = try Int(parsing: &input, storedAsLittleEndian: Int64.self)
-      modifiedNanoseconds = try Int(parsing: &input, storedAsLittleEndian: Int64.self)
-      changedSeconds = try Int(parsing: &input, storedAsLittleEndian: Int64.self)
-      changedNanoseconds = try Int(parsing: &input, storedAsLittleEndian: Int64.self)
+    init(reading input: inout ByteReader, from bytes: Span<UInt8>) throws(ByteReader.Malformed) {
+      modifiedSeconds = try Int(input.read(Int64.self, from: bytes))
+      modifiedNanoseconds = try Int(input.read(Int64.self, from: bytes))
+      changedSeconds = try Int(input.read(Int64.self, from: bytes))
+      changedNanoseconds = try Int(input.read(Int64.self, from: bytes))
     }
   }
 
@@ -105,7 +104,7 @@ final class ListingCache: Sendable {
       OS.unlink(name + ".v\(old)")
     }
     let contents = Self.read(path) ?? []
-    let count = Self.validRecordCount(contents.span.bytes)
+    let count = Self.validRecordCount(contents.span)
     self.contents = count == nil ? [] : contents
     recordCount = count ?? 0
   }
@@ -117,14 +116,13 @@ final class ListingCache: Sendable {
   }
 
   /// The number of records if the header and index fit in the file.
-  private static func validRecordCount(_ file: RawSpan) -> Int? {
-    var input = ParserSpan(file)
+  private static func validRecordCount(_ file: Span<UInt8>) -> Int? {
+    var input = ByteReader(file)
     do {
-      try #magicNumber("SGLC", parsing: &input)
-      guard try UInt32(parsingLittleEndian: &input) == version else { return nil }
-      let count = try Int(parsing: &input, storedAsLittleEndian: UInt32.self)
-      try input.seek(toRelativeOffset: 4)
-      _ = try input.sliceSpan(byteCount: count * indexEntrySize)
+      guard try input.read(UInt32.self, from: file) == magic,
+            try input.read(UInt32.self, from: file) == version else { return nil }
+      let count = try Int(input.read(UInt32.self, from: file))
+      try input.skip(4 + count * indexEntrySize)
       return count
     } catch {
       return nil
@@ -169,25 +167,25 @@ final class ListingCache: Sendable {
   /// One entry of the sorted index.
   private struct IndexEntry {
     var key: Key
-    var record: ParserRange
+    var record: Range<Int>
 
     /// Parses entry `i`; the record range is checked against the file.
-    init(_ i: Int, in file: borrowing ParserSpan) throws(ParsingError) {
-      var input = try file.seeking(toAbsoluteOffset: ListingCache.headerSize + i * ListingCache.indexEntrySize)
-      let inode = try UInt64(parsingLittleEndian: &input)
-      let device = try Int32(parsingLittleEndian: &input)
-      let offset = try Int(parsing: &input, storedAsLittleEndian: UInt32.self)
-      let length = try Int(parsing: &input, storedAsLittleEndian: UInt32.self)
+    init(_ i: Int, in file: Span<UInt8>) throws(ByteReader.Malformed) {
+      var input = try ByteReader(file, from: ListingCache.headerSize + i * ListingCache.indexEntrySize)
+      let inode = try input.read(UInt64.self, from: file)
+      let device = try input.read(Int32.self, from: file)
+      let offset = try Int(input.read(UInt32.self, from: file))
+      let length = try Int(input.read(UInt32.self, from: file))
       key = Key(device: device, inode: inode)
-      var whole = try file.seeking(toAbsoluteOffset: offset)
-      record = try whole.sliceRange(byteCount: length)
+      var whole = try ByteReader(file, from: offset)
+      record = try whole.take(length).range
     }
   }
 
   /// Fills `listing` from the cache if the directory is unchanged.
   func load(_ key: Key, stamp: Stamp, into listing: inout DirectoryListing) -> Bool {
     let contents = contents
-    let file = ParserSpan(contents.span.bytes)
+    let file = contents.span
     do {
       var lo = 0
       var hi = recordCount
@@ -199,10 +197,10 @@ final class ListingCache: Sendable {
         } else if key < entry.key {
           hi = mid
         } else {
-          var record = try file.seeking(toRange: entry.record)
-          guard try Stamp(parsing: &record) == stamp else { return false }
-          let count = try Int(parsing: &record, storedAsLittleEndian: UInt32.self)
-          try listing.load(cachedEntries: &record, count: count)
+          var record = try ByteReader(entry.record, in: file)
+          guard try Stamp(reading: &record, from: file) == stamp else { return false }
+          let count = try Int(record.read(UInt32.self, from: file))
+          try listing.load(cachedEntries: &record, from: file, count: count)
           return true
         }
       }
@@ -245,14 +243,14 @@ final class ListingCache: Sendable {
     let updates = fresh.withLock { $0 }
     guard !updates.isEmpty else { return }
     let contents = contents
-    let file = ParserSpan(contents.span.bytes)
+    let file = contents.span
     var records: [(Key, Range<Int>?, Record?)] = []
     records.reserveCapacity(recordCount + updates.count)
     // Keep earlier listings unless the file has grown past its bound.
     if recordCount + updates.count <= Self.maxRecords {
       for i in 0..<recordCount {
         guard let entry = try? IndexEntry(i, in: file), updates[entry.key] == nil else { continue }
-        records.append((entry.key, entry.record.lowerBound..<entry.record.upperBound, nil))
+        records.append((entry.key, entry.record, nil))
       }
     }
     for (key, record) in updates {
@@ -324,19 +322,19 @@ final class ListingCache: Sendable {
   }
 }
 
-private struct InvalidEntryKind: Error {}
-
 extension DirectoryListing {
   /// Replaces the listing with `count` entries decoded from a cache record:
   /// kind (u8, high bit: large file), name length (u16), name.
-  mutating func load(cachedEntries input: inout ParserSpan, count: Int) throws(ParsingError) {
+  mutating func load(
+    cachedEntries input: inout ByteReader, from bytes: Span<UInt8>, count: Int,
+  ) throws(ByteReader.Malformed) {
     reset()
     for _ in 0..<count {
-      let tag = try UInt8(parsing: &input)
-      guard let kind = EntryKind(rawValue: tag & 0x7F) else { throw ParsingError(userError: InvalidEntryKind()) }
-      let length = try Int(parsing: &input, storedAsLittleEndian: UInt16.self)
-      let name = try input.sliceSpan(byteCount: length)
-      appendEntry(name: Span(viewing: name.bytes), kind: kind, size: -1, largeHint: tag & 0x80 != 0)
+      let tag = try input.read(UInt8.self, from: bytes)
+      guard let kind = EntryKind(rawValue: tag & 0x7F) else { throw ByteReader.Malformed() }
+      let length = try Int(input.read(UInt16.self, from: bytes))
+      let name = try input.take(length).range
+      appendEntry(name: bytes.extracting(name), kind: kind, size: -1, largeHint: tag & 0x80 != 0)
     }
   }
 }

@@ -26,7 +26,9 @@ enum OS {
   }
 
   /// Opens `name` (NUL-terminated) in the open directory `directory`.
-  static func open(_ name: Span<UInt8>, in directory: FileDescriptor, _ options: FileDescriptor.OpenOptions = []) throws(Errno) -> OpenFile {
+  static func open(
+    _ name: Span<UInt8>, in directory: FileDescriptor, _ options: FileDescriptor.OpenOptions = [],
+  ) throws(Errno) -> OpenFile {
     precondition(name.count > 0 && name[name.count - 1] == 0, "name must be NUL-terminated")
     let fd = name.withUnsafeBufferPointer { p in
       unsafe p.withMemoryRebound(to: CChar.self) { unsafe openat(directory.rawValue, $0.baseAddress!, options.rawValue) }
@@ -194,7 +196,7 @@ enum OS {
         close(fd)
       }
     }
-    var actions: posix_spawn_file_actions_t? = nil
+    var actions: posix_spawn_file_actions_t?
     unsafe posix_spawn_file_actions_init(&actions)
     defer { unsafe posix_spawn_file_actions_destroy(&actions) }
     if let input {
@@ -206,7 +208,7 @@ enum OS {
     unsafe posix_spawn_file_actions_adddup2(&actions, errorPipe[1], 2)
     // The child gets only these three descriptors, so children spawned by
     // other workers at the same time never hold each other's pipes open.
-    var attributes: posix_spawnattr_t? = nil
+    var attributes: posix_spawnattr_t?
     unsafe posix_spawnattr_init(&attributes)
     defer { unsafe posix_spawnattr_destroy(&attributes) }
     unsafe posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
@@ -287,6 +289,82 @@ enum OS {
     guard unsafe gethostname(&buffer, buffer.count) == 0 else { return nil }
     let name = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
     return String(decoding: name, as: UTF8.self)
+  }
+
+  // MARK: - Character encodings
+
+  /// The addresses of libiconv's functions, which is loaded only when an
+  /// encoding needs it.
+  private struct Iconv: Sendable {
+    let open: Int
+    let convert: Int
+    let close: Int
+  }
+
+  private typealias IconvOpen = @convention(c) (UnsafePointer<CChar>, UnsafePointer<CChar>) -> UnsafeMutableRawPointer?
+  private typealias IconvConvert = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, UnsafeMutablePointer<Int>?,
+    UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?, UnsafeMutablePointer<Int>?,
+  ) -> Int
+  private typealias IconvClose = @convention(c) (UnsafeMutableRawPointer?) -> Int32
+
+  private static let iconv: Iconv? = {
+    guard let handle = unsafe dlopen("/usr/lib/libiconv.2.dylib", RTLD_LAZY | RTLD_LOCAL),
+          let open = unsafe dlsym(handle, "iconv_open"),
+          let convert = unsafe dlsym(handle, "iconv"),
+          let close = unsafe dlsym(handle, "iconv_close")
+    else { return nil }
+    return Iconv(open: Int(bitPattern: open), convert: Int(bitPattern: convert), close: Int(bitPattern: close))
+  }()
+
+  /// Converts `input` from `encoding` (an iconv name) to UTF-8, appending
+  /// to `output`. Bytes that can't be converted become U+FFFD, one byte at
+  /// a time. Returns false if iconv or the encoding isn't available.
+  static func convert(_ input: Span<UInt8>, from encoding: String, appendingTo output: inout [UInt8]) -> Bool {
+    guard let functions = iconv,
+          let openAddress = unsafe UnsafeRawPointer(bitPattern: functions.open),
+          let convertAddress = unsafe UnsafeRawPointer(bitPattern: functions.convert),
+          let closeAddress = unsafe UnsafeRawPointer(bitPattern: functions.close)
+    else { return false }
+    let open = unsafe unsafeBitCast(openAddress, to: IconvOpen.self)
+    let convert = unsafe unsafeBitCast(convertAddress, to: IconvConvert.self)
+    let close = unsafe unsafeBitCast(closeAddress, to: IconvClose.self)
+    let descriptor = unsafe open("UTF-8", encoding)
+    guard let descriptor = unsafe descriptor, Int(bitPattern: descriptor) != -1 else { return false }
+    defer { _ = unsafe close(descriptor) }
+    let replacement: [UInt8] = [0xEF, 0xBF, 0xBD]
+    var chunk = [UInt8](repeating: 0, count: 64 << 10)
+    input.withUnsafeBufferPointer { source in
+      guard let base = source.baseAddress else { return }
+      var offset = 0
+      while offset < source.count {
+        var inLeft = source.count - offset
+        var outLeft = chunk.count
+        let (result, error) = chunk.withUnsafeMutableBufferPointer { target in
+          var inPointer: UnsafeMutablePointer<CChar>? = unsafe UnsafeMutableRawPointer(mutating: base + offset)
+            .assumingMemoryBound(to: CChar.self)
+          var outPointer: UnsafeMutablePointer<CChar>? = unsafe UnsafeMutableRawPointer(target.baseAddress!)
+            .assumingMemoryBound(to: CChar.self)
+          let result = unsafe convert(descriptor, &inPointer, &inLeft, &outPointer, &outLeft)
+          return (result, result == -1 ? errno : 0)
+        }
+        output.append(contentsOf: chunk[..<(chunk.count - outLeft)])
+        offset = source.count - inLeft
+        guard result == -1 else { break }
+        switch error {
+        case E2BIG:
+          continue
+        case EILSEQ:
+          output.append(contentsOf: replacement)
+          offset += 1
+        default:
+          // An incomplete sequence at the end (EINVAL).
+          output.append(contentsOf: replacement)
+          offset = source.count
+        }
+      }
+    }
+    return true
   }
 
   // MARK: - Process environment

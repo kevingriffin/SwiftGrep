@@ -19,8 +19,10 @@ The README has the measurements behind every design decision.
   - `Span`, `RawSpan`, `InlineArray`, `UniqueArray`
   - `Mutex`/`Atomic`
   - the System framework's `FileDescriptor`, `Stat` and `Errno`
-- No Foundation in our code. Startup is about 2.4 ms and matters for
-  single-file use.
+- No Foundation, in our code or linked in: loading it adds 0.7 ms to a
+  startup of about 2.2 ms, which matters for single-file use. `otool -L`
+  on the binary must not list it. Dependencies that use Foundation when it's
+  available pull it in; swift-binary-parsing was dropped for that.
 - Don't enable experimental compiler features. In particular, methods can't
   return a `Span`, so pass spans as parameters or slice storage at the call
   site.
@@ -67,8 +69,9 @@ The README has the measurements behind every design decision.
     `.`, `..`, or contain `/` or NUL.
   - **Ignore files:** glob matching must stay O(pattern × path) with no
     recursion.
-  - **The cache file:** parse it with `ParserSpan`; a damaged file is a
-    cache miss. Use a private directory, and create files with
+  - **The cache file and `getattrlistbulk` results:** parse them with
+    `ByteReader`, which throws instead of reading past its range; a damaged
+    cache file is a cache miss. Use a private directory, and create files with
     `O_EXCL | O_NOFOLLOW`.
   - **Regexes:** keep the nesting and size limits and the linear-time
     engines.

@@ -24,10 +24,23 @@ struct DirectoryJob: Sendable {
   var ignore: IgnoreLevel?
   /// Directories above this one (only tracked with `--follow`).
   var ancestors: [FileID]
-  /// The listing cache for this job's search root, if enabled.
-  var cache: ListingCache?
-  /// The device of the search root (with `--one-file-system`).
-  var rootDevice: Int32 = 0
+  var root: SearchRoot
+}
+
+/// What every directory under a search root shares. It's one reference so
+/// that `DirectoryJob` stays small: with a seventh stored property, the
+/// optimizer stopped passing jobs by their fields, and listing nixpkgs got
+/// 7% slower.
+final class SearchRoot: Sendable {
+  /// The listing cache, if enabled.
+  let cache: ListingCache?
+  /// The device, for `--one-file-system`.
+  let device: Int32
+
+  init(cache: ListingCache?, device: Int32) {
+    self.cache = cache
+    self.device = device
+  }
 }
 
 /// How a directory's entries are reached: through an open descriptor when its
@@ -86,6 +99,8 @@ final class SearchRun: Sendable {
   let ignoreMessages: Bool
   /// The search root is the current directory, which wasn't named.
   let implicitPath: Bool
+  /// `--pre` and `-z`.
+  let commands: FileCommands?
 
   let matched = Atomic<Bool>(false)
   let failed = Atomic<Bool>(false)
@@ -94,7 +109,8 @@ final class SearchRun: Sendable {
 
   init(settings: OutputSettings, matcher: Matcher, walk: WalkOptions, overrides: IgnoreRules?,
        types: TypeMatcher?, sink: OutputSink, queue: WorkQueue<Job>, flushEachFile: Bool, separateFiles: Bool,
-       sortOutput: Bool, quitAfterMatch: Bool, messages: Bool, ignoreMessages: Bool, implicitPath: Bool)
+       sortOutput: Bool, quitAfterMatch: Bool, messages: Bool, ignoreMessages: Bool, implicitPath: Bool,
+       commands: FileCommands? = nil)
   {
     self.settings = settings
     self.matcher = matcher
@@ -111,6 +127,7 @@ final class SearchRun: Sendable {
     self.messages = messages
     self.ignoreMessages = ignoreMessages
     self.implicitPath = implicitPath
+    self.commands = commands
   }
 
   func stop() {
@@ -119,9 +136,13 @@ final class SearchRun: Sendable {
   }
 
   func report(_ path: [UInt8], _ error: Errno) {
+    report(path, error.message)
+  }
+
+  func report(_ path: [UInt8], _ message: String) {
     failed.store(true, ordering: .relaxed)
     guard messages else { return }
-    Diagnostics.error("\(String(decoding: path.isEmpty ? Array(".".utf8) : path, as: UTF8.self)): \(error.message)")
+    Diagnostics.error("\(String(decoding: path.isEmpty ? Array(".".utf8) : path, as: UTF8.self)): \(message)")
   }
 
   /// Reports the lines of an ignore file that couldn't be parsed, one per
@@ -202,8 +223,8 @@ struct Worker: ~Copyable {
   private mutating func process(_ job: DirectoryJob) {
     var openPath = job.displayPath.isEmpty ? Array(".".utf8) : job.displayPath
     openPath.append(0)
-    var info: Stat? = nil
-    if job.cache != nil || shared.walk.oneFileSystem {
+    var info: Stat?
+    if job.root.cache != nil || shared.walk.oneFileSystem {
       // A cheap stat decides whether the cached listing is still valid.
       let current: Stat
       do {
@@ -213,11 +234,11 @@ struct Worker: ~Copyable {
         return
       }
       info = current
-      if shared.walk.oneFileSystem && current.deviceID.rawValue != job.rootDevice {
+      if shared.walk.oneFileSystem && current.deviceID.rawValue != job.root.device {
         return
       }
     }
-    if let cache = job.cache, let current = info {
+    if let cache = job.root.cache, let current = info {
       if cache.load(ListingCache.Key(current), stamp: ListingCache.Stamp(current), into: &listing) {
         processEntries(of: job, access: .path, info: current)
         return
@@ -240,7 +261,7 @@ struct Worker: ~Copyable {
       shared.report(job.displayPath, error)
       return
     }
-    if let cache = job.cache, let info {
+    if let cache = job.root.cache, let info {
       cache.record(ListingCache.Key(info), stamp: ListingCache.Stamp(info), listing: listing)
     }
     processEntries(of: job, access: .descriptor(directory.descriptor), info: info)
@@ -285,7 +306,7 @@ struct Worker: ~Copyable {
         let child = DirectoryJob(
           displayPath: Self.join(job.displayPath, name.span),
           absolutePath: Self.join(job.absolutePath, name.span),
-          depth: entryDepth, ignore: level, ancestors: ancestors, cache: job.cache, rootDevice: job.rootDevice,
+          depth: entryDepth, ignore: level, ancestors: ancestors, root: job.root,
         )
         subdirectories.append(.directory(child))
       } else {
@@ -454,10 +475,10 @@ struct Worker: ~Copyable {
   /// listing, so nothing is opened speculatively).
   private func loadIgnoreFiles(_ access: DirectoryAccess, job: DirectoryJob) -> IgnoreLevel? {
     let context = shared.walk.ignore
-    var rgignore: IgnoreRules? = nil
-    var dotIgnore: IgnoreRules? = nil
-    var gitignore: IgnoreRules? = nil
-    var gitExclude: IgnoreRules? = nil
+    var rgignore: IgnoreRules?
+    var dotIgnore: IgnoreRules?
+    var gitignore: IgnoreRules?
+    var gitExclude: IgnoreRules?
     var hasGit = false
     let names = listing.names.span
     for entry in listing.entries {
@@ -526,6 +547,9 @@ struct Worker: ~Copyable {
       searcher.list(displayScratch)
       return
     }
+    if searchThroughCommand(explicit: false) {
+      return
+    }
     if entry.size == 0 {
       // Nothing to read, but some modes still report the file.
       searcher.search([UInt8]().span, path: displayScratch, explicit: false)
@@ -572,6 +596,9 @@ struct Worker: ~Copyable {
   private mutating func searchExplicitFile(_ path: [UInt8]) {
     displayScratch = path
     searcher.totals.filesConsidered += 1
+    if shared.settings.mode != .listFiles, searchThroughCommand(explicit: true) {
+      return
+    }
     let file: OpenFile
     do {
       file = try OS.open((path + [0]).span, .closeOnExec)
@@ -591,6 +618,9 @@ struct Worker: ~Copyable {
   private mutating func searchLargeFile(_ path: [UInt8], size: Int64) {
     displayScratch = path
     searcher.totals.filesConsidered += 1
+    if searchThroughCommand(explicit: false) {
+      return
+    }
     let file: OpenFile
     do {
       file = try OS.open((path + [0]).span, .closeOnExec)
@@ -599,6 +629,51 @@ struct Worker: ~Copyable {
       return
     }
     readAndSearch(file, size: size, regularFile: true, explicit: false)
+  }
+
+  /// `--pre` and `-z`: searches a command's output instead of the file at
+  /// `displayScratch`. Returns false if the file is to be searched as it is
+  /// (no command applies, or a decompressor couldn't be started).
+  private mutating func searchThroughCommand(explicit: Bool) -> Bool {
+    guard let commands = shared.commands, let command = commands.command(for: displayScratch) else { return false }
+    let result: OS.ProcessResult
+    switch command {
+    case let .preprocess(arguments):
+      // The preprocessor reads the file on standard input too.
+      let input: OpenFile
+      do {
+        input = try OS.open((displayScratch + [0]).span, .closeOnExec)
+      } catch {
+        shared.report(displayScratch, error)
+        return true
+      }
+      do {
+        result = try OS.spawn(arguments, input: input.descriptor)
+      } catch {
+        shared.report(displayScratch, "preprocessor command could not start: '\(FileCommands.describe(arguments))': "
+          + error.message)
+        return true
+      }
+      guard result.status == 0 else {
+        shared.report(displayScratch, "preprocessor command failed: '\(FileCommands.describe(arguments))': "
+          + FileCommands.describe(errorOutput: result.error))
+        return true
+      }
+    case let .decompress(arguments):
+      // Like ripgrep, a missing decompressor means the file is searched as is.
+      guard let output = try? OS.spawn(arguments) else { return false }
+      guard output.status == 0 else {
+        shared.report(displayScratch, FileCommands.describe(errorOutput: output.error))
+        return true
+      }
+      result = output
+    }
+    searchBytes(result.output, explicit: explicit)
+    return true
+  }
+
+  private mutating func searchBytes(_ bytes: [UInt8], explicit: Bool) {
+    searcher.search(bytes.span, path: displayScratch, explicit: explicit)
   }
 
   private mutating func searchStandardInput() {

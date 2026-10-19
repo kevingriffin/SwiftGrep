@@ -11,7 +11,7 @@ print files in a nondeterministic order. On a terminal, stderr is mixed into
 the output, so the "rg: "/"sg: " message prefixes are normalized. With -v,
 differing lines are shown. The queries assume a Linux kernel checkout.
 """
-import os, re, subprocess, sys, shlex
+import os, re, subprocess, sys, shlex, tempfile
 
 args = [a for a in sys.argv[1:] if a != "-v"]
 verbose = "-v" in sys.argv[1:]
@@ -215,12 +215,55 @@ Q = [
   ["--pretty", "-q", "rq", P],
   ["-q", "--files", P],
   ["--files", "-l", "rq", P],
+  # Multi-line search.
+  ["-U", "-c", "rq_clock\\(rq\\);\\n\\s+update", P],
+  ["-U", "-n", "--column", "static void\\n\\w+", P],
+  ["-U", "-o", "-n", "struct rq \\*rq\\)\\n\\{", P],
+  ["-U", "--vimgrep", "struct rq \\*rq\\)\\n\\{", P],
+  ["-U", "--multiline-dotall", "-c", "rq.{0,40}clock", P],
+  ["-U", "-n", "-C1", "-m2", "^\\}\\n\\nstatic", P],
+  ["-U", "-v", "-c", "static void\\n", P],
+  ["-U", "--count-matches", "\\Astatic|;\\n\\z", P],
+  ["-U", "--color=always", "-n", "rq_clock\\(rq\\);\\n\\s+update", P],
+  ["-U", "-r", "X$1", "(rq)_clock\\(rq\\);\\n", P],
+  ["-U", "--json", "struct rq \\*rq\\)\\n\\{", "kernel/sched/pelt.c"],
+  ["-U", "--passthru", "-n", "rq_clock\\(rq\\);\\n\\s+update", "kernel/sched/pelt.h"],
+  # Preprocessors, compressed files and encodings.
+  ["--pre", "cat", "-c", "rq", P],
+  ["--pre", "cat", "--pre-glob", "*.h", "-n", "update_curr", P],
+  ["--pre", "false", "-c", "rq", "kernel/sched/core.c"],
+  ["--pre", "nonexistent-command", "-c", "rq", "kernel/sched/core.c"],
+  ["-z", "-c", "rq", P],
+  ["-E", "latin1", "-c", "rq", P],
+  ["-E", "utf-16le", "-c", ".", "kernel/sched/core.c"],
+  ["-E", "shift_jis", "-n", "update_curr", "kernel/sched/core.c"],
+  ["-E", "bogus", "x"],
+  # Patterns: Unicode properties, smart case, joined patterns and errors.
+  ["-c", "\\p{Greek}|\\p{sc=Han}|\\p{Emoji_Presentation}", "."],
+  ["-S", "-c", "\\p{Lu}\\w+", P],
+  ["-S", "-c", "\\x52Q_", P],
+  ["-c", "-e", "rq)|(cfs", P],
+  ["-e", "rq_{2,1}", P],
+  ["-e", "(?ii)rq", P],
+  ["-e", "\\p{Script=Nope}", P],
+  # The configuration file.
+  [{"RIPGREP_CONFIG_PATH": "CONFIG"}, "update_curr", P],
+  [{"RIPGREP_CONFIG_PATH": "CONFIG"}, "--no-config", "update_curr", P],
+  [{"RIPGREP_CONFIG_PATH": "/nonexistent"}, "-c", "update_curr", P],
 ]
+config = tempfile.NamedTemporaryFile("w", suffix=".rgrc", delete=False)
+config.write("# A comment, then flags\n\n--sort=path\n-n\n--context\n1\n")
+config.close()
 def run(binary, args, tty):
+    # A row may start with environment variables ("CONFIG" is the config file).
+    env = dict(os.environ)
+    if args and isinstance(args[0], dict):
+        env.update({k: config.name if v == "CONFIG" else v for k, v in args[0].items()})
+        args = args[1:]
     cmd = [binary] + args
     if tty:
         cmd = ["script", "-q", "/dev/null"] + cmd
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+    r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
     out = r.stdout
     if tty:
         # script(1) echoes ^D and backspaces, and translates newlines (a
@@ -239,17 +282,20 @@ for tty in (False, True):
         rc1, o1, e1 = run("rg", args, tty)
         rc2, o2, e2 = run(sg, args, tty)
         exact = (any(a in ("--sort", "--sortr", "--sort=path", "--sort-files") for a in args) and "none" not in args
-                 and "--no-sort-files" not in args)
+                 and "--no-sort-files" not in args) or (isinstance(args[0], dict) and "CONFIG" in args[0].values()
+                                                 and "--no-config" not in args)
         same_out = o1 == o2 if exact else sorted(o1.split(b"\n")) == sorted(o2.split(b"\n"))
         # rg's file order is nondeterministic, so compare output as sorted lines unless sorted.
         if rc1 == rc2 and same_out:
             continue
         fails += 1
-        print(f"{'TTY ' if tty else ''}DIFF {shlex.join(args)}: exit rg={rc1} sg={rc2}, out {len(o1)} vs {len(o2)} bytes")
+        shown = [f"{k}={v}" for k, v in args[0].items()] + args[1:] if isinstance(args[0], dict) else args
+        print(f"{'TTY ' if tty else ''}DIFF {shlex.join(shown)}: exit rg={rc1} sg={rc2}, out {len(o1)} vs {len(o2)} bytes")
         if not same_out and verbose:
             a, b = set(o1.split(b"\n")), set(o2.split(b"\n"))
             for l in sorted(a - b)[:3]: print("   rg:", l[:160])
             for l in sorted(b - a)[:3]: print("   sg:", l[:160])
         if verbose and e1 != e2 and (rc1 == 2 or rc2 == 2):
             print("   rg err:", e1[:200]); print("   sg err:", e2[:200])
+os.unlink(config.name)
 print(f"{2*len(Q) - fails}/{2*len(Q)} identical")

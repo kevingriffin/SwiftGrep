@@ -13,8 +13,6 @@ let
   # old source through a stale hash: a missing entry gets lib.fakeHash, and
   # the build fails and prints the hash to add.
   hashes = {
-    # swift-binary-parsing 0.0.4
-    "8f0f56a795e36eff6d532b01e8e94f640e3443dd" = "sha256-FJRHnflaSzhraka5VCKixrVc+e5z3NAxH9u15LPOkTQ=";
     # swift-syntax 603.0.2
     "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1" = "sha256-zr+2MlGncEu1bEQwUUxlySDx4XOyK+LnX1SRbtm9ERc=";
   };

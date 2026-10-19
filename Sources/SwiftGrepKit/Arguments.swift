@@ -441,7 +441,7 @@ private struct ArgumentState {
       }
       if argument.hasPrefix("--") {
         var name = String(argument.dropFirst(2))
-        var inline: String? = nil
+        var inline: String?
         if let eq = name.firstIndex(of: "=") {
           inline = String(name[name.index(after: eq)...])
           name = String(name[..<eq])
@@ -581,18 +581,17 @@ private struct ArgumentState {
     case .text: config.binary = on ? .text : .auto
     case .encoding:
       guard case .value = value else {
-        config.stripByteOrderMark = true
+        config.encoding = .auto
         return
       }
-      // Only UTF-8 is supported, where ripgrep's encodings differ just in
-      // whether a byte order mark is skipped.
-      switch text.lowercased() {
-      case "auto", "utf-8", "utf8", "unicode-1-1-utf-8": config.stripByteOrderMark = true
-      case "none": config.stripByteOrderMark = false
+      switch text {
+      case "auto": config.encoding = .auto
+      case "none": config.encoding = .disabled
       default:
-        throw Encodings.isKnown(text)
-          ? UsageError("unsupported encoding: \(text) (SwiftGrep only searches UTF-8)")
-          : UsageError("grep config error: unknown encoding: \(text)")
+        guard let encoding = Encodings.encoding(forLabel: text) else {
+          throw UsageError("grep config error: unknown encoding: \(text)")
+        }
+        config.encoding = .some(encoding)
       }
     case .engine:
       switch text {

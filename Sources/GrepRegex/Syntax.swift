@@ -86,21 +86,6 @@ indirect enum RegexNode: Sendable, Hashable {
   /// A capturing group; group 0 is the whole match, so indices start at 1.
   case capture(Int, RegexNode)
 
-  /// Whether the expression contains any character with uppercase letters, used by smart case.
-  var containsUppercaseLiteral: Bool {
-    switch self {
-    case let .char(c):
-      guard let s = Unicode.Scalar(c) else { return false }
-      return s.properties.isUppercase
-    case let .concat(nodes), let .alternate(nodes):
-      return nodes.contains { $0.containsUppercaseLiteral }
-    case let .repeat(node, _, _, _), let .group(node), let .capture(_, node):
-      return node.containsUppercaseLiteral
-    default:
-      return false
-    }
-  }
-
   var containsLook: Bool {
     switch self {
     case .look: true
@@ -152,18 +137,25 @@ enum UTF8Encoding {
   }
 }
 
-/// An error produced while parsing or compiling a pattern.
+/// An error produced while parsing or compiling a pattern, shown the way
+/// regex-syntax shows its errors.
 public struct RegexError: Error, Sendable, CustomStringConvertible {
   public let message: String
   public let pattern: String
-  public let offset: Int?
+  /// The part of the pattern in error, in Unicode scalars (Rust's `char`s,
+  /// in which regex-syntax counts columns). An empty span gets one caret.
+  public let span: Range<Int>?
+  /// A second part, for errors such as a duplicate group name that point at
+  /// the first occurrence too.
+  public let auxiliarySpan: Range<Int>?
   /// The message stands alone, without the pattern (compilation limits).
   public var standalone = false
 
-  init(message: String, pattern: String, offset: Int?, standalone: Bool = false) {
+  init(message: String, pattern: String, span: Range<Int>?, auxiliarySpan: Range<Int>? = nil, standalone: Bool = false) {
     self.message = message
     self.pattern = pattern
-    self.offset = offset
+    self.span = span
+    self.auxiliarySpan = auxiliarySpan
     self.standalone = standalone
   }
 
@@ -171,9 +163,90 @@ public struct RegexError: Error, Sendable, CustomStringConvertible {
     if standalone {
       return message
     }
-    guard let offset else { return "regex parse error:\n    \(pattern)\nerror: \(message)" }
+    guard let span else { return "regex parse error:\n    \(pattern)\nerror: \(message)" }
+    return ErrorNotation(pattern: pattern, spans: [span] + (auxiliarySpan.map { [$0] } ?? [])).text(message: message)
+  }
+}
+
+/// regex-syntax's error formatter: the pattern with carets under the spans,
+/// and line numbers when the pattern has several lines.
+private struct ErrorNotation {
+  let lines: [[Unicode.Scalar]]
+  let multiLine: Bool
+  /// Width of the line numbers (0 for a single line).
+  let numberWidth: Int
+  /// One-line spans by line, as (first column, columns) from 0.
+  var byLine: [[(column: Int, width: Int)]]
+  /// Spans over several lines, as (line, column) pairs from 1.
+  var spread: [((Int, Int), (Int, Int))] = []
+
+  init(pattern: String, spans: [Range<Int>]) {
     let scalars = Array(pattern.unicodeScalars)
-    let caretColumn = String(String.UnicodeScalarView(scalars.prefix(offset))).count
-    return "regex parse error:\n    \(pattern)\n    \(String(repeating: " ", count: caretColumn))^\nerror: \(message)"
+    // Lines as Rust's `str::lines` gives them: split at `\n`, without a
+    // trailing `\r`, and no empty line after a final `\n`.
+    var split = scalars.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+      line.last == "\r" ? Array(line.dropLast()) : Array(line)
+    }
+    if scalars.last == "\n" {
+      split.removeLast()
+    }
+    lines = split
+    multiLine = scalars.contains("\n")
+    // A span can start just after a final `\n`, on one more line.
+    let count = split.count + (scalars.last == "\n" ? 1 : 0)
+    numberWidth = count <= 1 ? 0 : String(count).count
+    byLine = Array(repeating: [], count: max(count, 1))
+    func position(_ offset: Int) -> (line: Int, column: Int) {
+      var line = 1
+      var column = 1
+      for scalar in scalars.prefix(offset) {
+        if scalar == "\n" {
+          line += 1
+          column = 1
+        } else {
+          column += 1
+        }
+      }
+      return (line, column)
+    }
+    for span in spans.sorted(by: { ($0.lowerBound, $0.upperBound) < ($1.lowerBound, $1.upperBound) }) {
+      let (start, end) = (position(span.lowerBound), position(span.upperBound))
+      if start.line == end.line {
+        byLine[start.line - 1].append((start.column - 1, max(1, end.column - start.column)))
+      } else {
+        spread.append(((start.line, start.column), (end.line, end.column)))
+      }
+    }
+  }
+
+  func text(message: String) -> String {
+    var notated = ""
+    for (i, line) in lines.enumerated() {
+      if numberWidth > 0 {
+        let number = String(i + 1)
+        notated += String(repeating: " ", count: numberWidth - number.count) + number + ": "
+      } else {
+        notated += "    "
+      }
+      notated += String(String.UnicodeScalarView(line)) + "\n"
+      if i < byLine.count, !byLine[i].isEmpty {
+        var notes = String(repeating: " ", count: numberWidth == 0 ? 4 : 2 + numberWidth)
+        var column = 0
+        for (start, width) in byLine[i] {
+          notes += String(repeating: " ", count: max(0, start - column)) + String(repeating: "^", count: width)
+          column = max(column, start) + width
+        }
+        notated += notes + "\n"
+      }
+    }
+    guard multiLine else { return "regex parse error:\n\(notated)error: \(message)" }
+    let divider = String(repeating: "~", count: 79)
+    var text = "regex parse error:\n\(divider)\n\(notated)\(divider)\n"
+    if !spread.isEmpty {
+      text += spread.map { start, end in
+        "on line \(start.0) (column \(start.1)) through line \(end.0) (column \(end.1 - 1))"
+      }.joined(separator: "\n") + "\n"
+    }
+    return text + "error: \(message)"
   }
 }

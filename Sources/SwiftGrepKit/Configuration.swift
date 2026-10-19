@@ -151,9 +151,8 @@ public struct Configuration: Sendable {
   public var maxDepth: Int?
   public var maxFilesize: Int64?
   public var binary: BinaryMode = .auto
-  /// Skip a leading UTF-8 byte order mark, like ripgrep's default encoding
-  /// detection (`-E none` turns it off).
-  public var stripByteOrderMark = true
+  /// `-E`: how files are decoded before searching.
+  public var encoding = EncodingMode.auto
   public var sort: SortOrder?
   /// `--pre` and `--pre-glob`: search a command's output instead.
   public var preprocessor: String?
@@ -234,7 +233,7 @@ final class OutputSettings: Sendable {
   let replacement: [UInt8]?
   let includeZero: Bool
   let binary: BinaryMode
-  let stripByteOrderMark: Bool
+  let encoding: EncodingMode
   let contextSeparator: [UInt8]?
   let fieldContextSeparator: [UInt8]
   let fieldMatchSeparator: [UInt8]
@@ -275,7 +274,7 @@ final class OutputSettings: Sendable {
     replacement = config.replacement
     includeZero = config.includeZero
     binary = config.matcher.lineTerminator == 0 ? .text : config.binary
-    stripByteOrderMark = config.stripByteOrderMark
+    encoding = config.encoding
     contextSeparator = config.contextSeparator
     fieldContextSeparator = config.fieldContextSeparator
     fieldMatchSeparator = config.fieldMatchSeparator

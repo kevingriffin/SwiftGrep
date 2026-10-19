@@ -440,7 +440,7 @@ enum GitConfig {
   private static func excludesFile(inConfig path: String) -> String? {
     guard let data = try? FileIO.readWholeFile(path: path) else { return nil }
     var inCore = false
-    var result: String? = nil
+    var result: String?
     for rawLine in String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: true) {
       let line = rawLine.trimmingCharacters(in: " \t\r")
       if line.hasPrefix("[") {

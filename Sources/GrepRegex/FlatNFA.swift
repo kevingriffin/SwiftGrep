@@ -27,6 +27,27 @@ struct FlatNFA: Sendable {
     kinds.count
   }
 
+  /// Whether any match can contain `byte` (the loop that lets a match start
+  /// anywhere doesn't count).
+  func canMatch(_ byte: UInt8) -> Bool {
+    let loop = Int(unanchoredStart)
+    let anyByte = kinds[loop] == .union ? Int(alternatives[Int(argA[loop]) + 1]) : -1
+    for state in kinds.indices where state != anyByte {
+      switch kinds[state] {
+      case .bytes where byteSets[Int(argA[state])].contains(byte):
+        return true
+      case .sparse:
+        let first = Int(argA[state])
+        if edges[first..<(first + Int(argB[state]))].contains(where: { $0.low <= byte && byte <= $0.high }) {
+          return true
+        }
+      default:
+        break
+      }
+    }
+    return false
+  }
+
   /// An estimate of the compiled size in bytes, scaled to what ripgrep's
   /// regex engine reports, for `--regex-size-limit`.
   var memoryUsage: Int {

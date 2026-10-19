@@ -61,8 +61,8 @@ public struct CommandLineFlagsMacro: MemberMacro {
         continue
       }
       let name = element.name.text
-      var section: String? = nil
-      var spelling: AttributeSyntax? = nil
+      var section: String?
+      var spelling: AttributeSyntax?
       for case let .attribute(attribute) in caseDecl.attributes {
         switch attribute.attributeName.trimmedDescription {
         case "Section": section = stringArguments(attribute).first

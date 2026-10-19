@@ -17,8 +17,6 @@ let package = Package(
     .library(name: "SwiftGrepKit", targets: ["SwiftGrepKit"]),
   ],
   dependencies: [
-    // Pre-1.0: pinned to a minor version.
-    .package(url: "https://github.com/apple/swift-binary-parsing", .upToNextMinor(from: "0.0.4")),
     // For the macros; SwiftPM uses a prebuilt copy matching the toolchain.
     .package(url: "https://github.com/swiftlang/swift-syntax", "603.0.0"..<"605.0.0"),
   ],
@@ -33,10 +31,18 @@ let package = Package(
     ),
     .target(
       name: "SwiftGrepKit",
-      dependencies: ["GrepRegex", "SwiftGrepMacros", .product(name: "BinaryParsing", package: "swift-binary-parsing")],
+      dependencies: ["GrepRegex", "SwiftGrepMacros"],
       swiftSettings: settings,
     ),
-    .executableTarget(name: "sg", dependencies: ["SwiftGrepKit"], swiftSettings: settings),
+    .executableTarget(
+      name: "sg",
+      dependencies: ["SwiftGrepKit"],
+      swiftSettings: settings,
+      // SwiftPM links executables with -fobjc-link-runtime, which adds
+      // Foundation. sg uses none of it, so drop it rather than load it at
+      // startup.
+      linkerSettings: [.unsafeFlags(["-Xlinker", "-dead_strip_dylibs"])],
+    ),
     .testTarget(name: "GrepRegexTests", dependencies: ["GrepRegex"]),
     .testTarget(name: "SwiftGrepKitTests", dependencies: ["SwiftGrepKit"]),
   ],
